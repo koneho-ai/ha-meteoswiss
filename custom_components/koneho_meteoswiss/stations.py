@@ -80,6 +80,46 @@ def parse_station_list(text: str) -> dict[str, LatLon]:
     return stations
 
 
+def parse_station_directory(text: str) -> dict[str, str]:
+    """Parse the SwissMetNet station list CSV: code -> station name.
+
+    The name comes from the list's ``Station`` column (e.g. "Zürich /
+    Fluntern" for SMA). Rows without a usable name fall back to the
+    code itself so every station remains selectable.
+    """
+    directory: dict[str, str] = {}
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    for row in reader:
+        code = (row.get("Abr.") or "").strip().upper()
+        if not code:
+            continue
+        name = (row.get("Station") or "").strip()
+        directory[code] = name or code
+    return directory
+
+
+# Label of the first (automatic) option in the config-flow station
+# picker; its value is the empty string, matching how "no station
+# configured" is stored in the entry data.
+AUTOMATIC_STATION_LABEL = "Automatic (nearest station)"
+
+
+def build_station_options(directory: dict[str, str]) -> list[tuple[str, str]]:
+    """(value, label) options for the config-flow station picker.
+
+    The first option is the automatic choice (empty value); the rest
+    are every station as ``"Name (CODE)"``, sorted by station name
+    (case-insensitive, code as tie-breaker). Values are the plain
+    station codes, exactly as stored in the entry data.
+    """
+    options: list[tuple[str, str]] = [("", AUTOMATIC_STATION_LABEL)]
+    for code, name in sorted(
+        directory.items(), key=lambda item: (item[1].lower(), item[0])
+    ):
+        options.append((code, f"{name} ({code})"))
+    return options
+
+
 def haversine_km(a: LatLon, b: LatLon) -> float:
     """Great-circle distance between two (lat, lon) points, in km."""
     lat1, lon1 = math.radians(a[0]), math.radians(a[1])

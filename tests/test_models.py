@@ -10,19 +10,20 @@ from koneho_meteoswiss.models import PlaceForecast
 
 
 def test_icon_mapping():
+    # Expectations follow MeteoSwiss's published symbol table (v0.2.2).
     assert icon_to_condition(1) == "sunny"
     assert icon_to_condition(101) == "clear-night"
     assert icon_to_condition(2) == "partlycloudy"
     assert icon_to_condition(3) == "partlycloudy"
     assert icon_to_condition(103) == "partlycloudy"
-    assert icon_to_condition(4) == "cloudy"
-    assert icon_to_condition(5) == "rainy"
-    assert icon_to_condition(6) == "snowy-rainy"
-    assert icon_to_condition(7) == "snowy"
-    assert icon_to_condition(107) == "snowy"
-    assert icon_to_condition(11) == "fog"
-    assert icon_to_condition(14) == "lightning-rainy"
-    assert icon_to_condition(114) == "lightning-rainy"
+    assert icon_to_condition(4) == "partlycloudy"
+    assert icon_to_condition(5) == "cloudy"
+    assert icon_to_condition(6) == "rainy"
+    assert icon_to_condition(7) == "snowy-rainy"
+    assert icon_to_condition(107) == "snowy-rainy"
+    assert icon_to_condition(11) == "snowy"
+    assert icon_to_condition(14) == "rainy"
+    assert icon_to_condition(114) == "rainy"
     assert icon_to_condition(17) == "rainy"
     # Unknown codes and missing values map to no condition, never crash.
     assert icon_to_condition(999) is None
@@ -59,7 +60,7 @@ def test_daily_forecast_building(fixture_bytes):
 
     first = daily[0]
     assert first["datetime"] == "2026-11-06"
-    assert first["condition"] == "lightning-rainy"  # iconDay 14
+    assert first["condition"] == "rainy"  # iconDay 14, official symbol table
     assert first["native_temperature"] == 8
     assert first["native_templow"] == 6
     assert first["native_precipitation"] == 3.3

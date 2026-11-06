@@ -56,11 +56,42 @@ STATION_LIST_URL = (
 CONF_NAME = "name"
 CONF_POSTCODE = "postcode"
 CONF_STATION = "station"
+CONF_UPDATE_INTERVAL = "update_interval"
 
-UPDATE_INTERVAL = timedelta(minutes=15)
+# Update interval (v0.2.2): configurable per entry in minutes via the
+# config/reconfigure flow. The default preserves the pre-0.2.2 fixed
+# 15-minute cadence, so existing entries (which have no stored value)
+# behave exactly as before.
+DEFAULT_UPDATE_INTERVAL_MINUTES = 15
+MIN_UPDATE_INTERVAL_MINUTES = 1
+MAX_UPDATE_INTERVAL_MINUTES = 180
+
+UPDATE_INTERVAL = timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES)
 TIMEZONE = "Europe/Zurich"
 
-USER_AGENT = "Home Assistant koneho_meteoswiss/0.2.1"
+USER_AGENT = "Home Assistant koneho_meteoswiss/0.2.2"
+
+
+def update_interval_minutes(entry_data: object) -> int:
+    """Resolve the stored update interval (minutes) for a config entry.
+
+    Missing or unparsable values fall back to the default; parsable
+    values are clamped into the configurable range. Pure helper so the
+    coordinator's cadence can be unit-tested without Home Assistant.
+    """
+    raw = None
+    if isinstance(entry_data, dict):
+        raw = entry_data.get(CONF_UPDATE_INTERVAL)
+    try:
+        minutes = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_UPDATE_INTERVAL_MINUTES
+    return max(MIN_UPDATE_INTERVAL_MINUTES, min(MAX_UPDATE_INTERVAL_MINUTES, minutes))
+
+
+def resolve_update_interval(entry_data: object) -> timedelta:
+    """The coordinator update interval implied by stored entry data."""
+    return timedelta(minutes=update_interval_minutes(entry_data))
 
 # MeteoSwiss warning type codes (warnType in plzDetail warnings).
 # Best-effort table: the numbering follows the hazard categories of the

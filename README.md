@@ -52,20 +52,26 @@ Settings → Devices & Services → Add Integration → **MeteoSwiss (Koneho)**:
 - **Place name** (optional) — defaults to `MeteoSwiss <postcode>`.
 - **Postcode** — 4-digit Swiss PLZ (e.g. `8048` for Zürich Altstetten,
   `8808` for Pfäffikon SZ). Validated with a live fetch during setup.
-- **SwissMetNet station code** (optional) — 3-letter code such as
-  `UEB` (Uetliberg), `SMA` (Zürich Fluntern) or `KLO` (Zürich Kloten).
-  **Leave it empty and the nearest station is selected automatically**
+- **SwissMetNet station** — a dropdown of all stations by name
+  (e.g. "Uetliberg (UEB)", "Zürich / Fluntern (SMA)"), headed by
+  **Automatic**: the nearest station is selected automatically
   (haversine distance from the postcode point to the stations in the
   current SwissMetNet data. Within 10 km beyond the nearest station's
   distance, a station reporting the core set — temperature, humidity,
   wind, and station pressure or QNH — is preferred; failing that, a
-  temperature-reporting station is preferred). A manually entered code
-  always wins.
+  temperature-reporting station is preferred). A manually picked
+  station always wins. If the station list cannot be fetched during
+  setup, the field falls back to a free-text 3-letter code.
+- **Update interval** — minutes between data updates (1–180,
+  default 15).
 
 One config entry = one postcode (+ optional station). Add the
 integration again for more places. Existing entries can be changed
-(name, postcode, station) via **Reconfigure** on the integration —
-clearing the station field re-enables automatic selection.
+(name, postcode, station, update interval) via **Reconfigure** on the
+integration — setting the station back to Automatic re-enables
+automatic selection. If a manually picked station stops appearing in
+the SwissMetNet data for several consecutive updates, a Repairs issue
+is raised (and cleared automatically when it reports again).
 
 ## Entities created
 
@@ -126,15 +132,27 @@ automatically.
 
 ## Icon → condition mapping
 
-Based on the MeteoSwiss weather-symbol set (day codes 1–35, night =
-day + 100), as documented e.g. in the Meteomatics "General Weather
-State" symbol table: 1 clear, 2–3 partly cloudy, 4 cloudy, 5 rain,
-6 rain/snow, 7 snow, 8 rain shower, 9 snow shower, 10 rain/snow
-shower, 11–12 fog, 13 freezing rain (→ rainy), 14 thunderstorm,
-15 drizzle (→ rainy), 16 sandstorm (→ windy). Unmapped codes yield no
-condition but remain visible on the icon-code sensor.
+Based on MeteoSwiss's published weather-symbol table: day symbols
+1–42 and night symbols 101–142, each mapped to the HA condition for
+that symbol's situation in the table (e.g. 5 "very cloudy" → cloudy,
+14 "very cloudy, light rain" → rainy, 20 "very overcast with rain" →
+pouring). Night symbols mirror the day symbols except 101
+(clear-night) and 126 (cloudy). Codes outside the published table
+yield no condition but remain visible on the icon-code sensor.
 
 ## Changelog
+
+- **0.2.2** — Condition mapping replaced with MeteoSwiss's published
+  symbol table (day codes 1–42, night codes 101–142; previously only
+  ~22 codes were mapped and several differed, e.g. 5 is now cloudy,
+  14 rainy, 20 pouring). Update interval is configurable per entry
+  (1–180 minutes, default 15). The station field in the config and
+  reconfigure flows is now a dropdown of station names ("Name
+  (CODE)") with Automatic first, falling back to the free-text code
+  field if the station list cannot be fetched. A Repairs issue is
+  raised when a manually configured station is missing from the
+  SwissMetNet data for 3 consecutive updates, and cleared when it
+  reports again.
 
 - **0.2.1** — Station sensors are created only for columns with a
   current value (and stale registry entries for missing columns are

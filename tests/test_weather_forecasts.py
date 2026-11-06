@@ -165,7 +165,7 @@ def test_async_forecast_daily(fixture_bytes):
 
     first = daily[0]
     assert first["datetime"] == "2026-11-06"
-    assert first["condition"] == "lightning-rainy"  # iconDay 14
+    assert first["condition"] == "rainy"  # iconDay 14, official symbol table
     assert first["native_temperature"] == 8
     assert first["native_templow"] == 6
 

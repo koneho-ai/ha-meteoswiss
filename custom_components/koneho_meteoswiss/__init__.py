@@ -15,8 +15,9 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .client import MeteoSwissApiError, MeteoSwissClient
-from .const import CONF_NAME, CONF_POSTCODE, CONF_STATION, DOMAIN
+from .const import CONF_NAME, CONF_POSTCODE, CONF_STATION, DOMAIN, resolve_update_interval
 from .coordinator import MeteoSwissCoordinator
+from .repairs import issue_id_for_entry
 
 PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR, Platform.BINARY_SENSOR]
 
@@ -29,7 +30,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_STATION) or None,
     )
     coordinator = MeteoSwissCoordinator(
-        hass, client, entry.data.get(CONF_NAME) or entry.data[CONF_POSTCODE]
+        hass,
+        client,
+        entry.data.get(CONF_NAME) or entry.data[CONF_POSTCODE],
+        update_interval=resolve_update_interval(entry.data),
+        entry_id=entry.entry_id,
     )
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -46,4 +51,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        # Drop a possibly active dead-manual-station Repairs issue;
+        # guarded like the coordinator's issue handling.
+        try:
+            from homeassistant.helpers import issue_registry as ir
+
+            ir.async_delete_issue(hass, DOMAIN, issue_id_for_entry(entry.entry_id))
+        except Exception:  # noqa: BLE001 - cleanup must not fail unloading
+            pass
     return unloaded

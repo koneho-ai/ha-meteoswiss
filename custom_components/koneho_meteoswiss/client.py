@@ -44,6 +44,7 @@ from .models import MeteoData, PlaceForecast, StationObservation
 from .stations import (
     LatLon,
     parse_meta_points,
+    parse_station_directory,
     parse_station_list,
     select_nearest_station,
 )
@@ -227,15 +228,18 @@ class MeteoSwissClient:
     def _headers(self) -> dict[str, str]:
         return {"User-Agent": USER_AGENT}
 
-    async def _get_text(self, url: str) -> str:
+    async def _get_bytes(self, url: str) -> bytes:
         try:
             async with self._session.get(
                 url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 response.raise_for_status()
-                body = await response.read()
+                return await response.read()
         except (aiohttp.ClientError, TimeoutError) as err:
             raise MeteoSwissApiError(f"Request to {url} failed: {err}") from err
+
+    async def _get_text(self, url: str) -> str:
+        body = await self._get_bytes(url)
         return body.decode("utf-8", errors="replace")
 
     async def async_fetch_place(self) -> PlaceForecast:
@@ -289,6 +293,21 @@ class MeteoSwissClient:
             coords = parse_station_list(text)
             _metadata_cache_set("station_list", coords)
         return coords
+
+    async def async_fetch_station_directory(self) -> dict[str, str]:
+        """All SwissMetNet stations as code -> display name (cached).
+
+        Used by the config flow's station picker. The station list
+        file is latin-1 encoded (verified live 2026-11-06), so unlike
+        the coordinate fetch — pure ASCII — this decodes the raw bytes
+        as latin-1 to keep names like "Zürich / Fluntern" intact.
+        """
+        directory = _metadata_cache_get("station_directory")
+        if directory is None:
+            body = await self._get_bytes(STATION_LIST_URL)
+            directory = parse_station_directory(body.decode("latin-1"))
+            _metadata_cache_set("station_directory", directory)
+        return directory
 
     async def async_get_data(self) -> MeteoData:
         """Fetch place payload plus station data.
