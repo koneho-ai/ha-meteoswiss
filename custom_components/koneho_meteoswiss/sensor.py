@@ -51,11 +51,13 @@ from .models import MeteoData, PlaceForecast, StationObservation
 
 _DEVICE_CLASSES = {
     "temperature": SensorDeviceClass.TEMPERATURE,
-    "dew_point": SensorDeviceClass.DEW_POINT,
+    # HA has no dew_point device class; dew point is a temperature (HA docs).
+    "dew_point": SensorDeviceClass.TEMPERATURE,
     "humidity": SensorDeviceClass.HUMIDITY,
     "pressure": SensorDeviceClass.PRESSURE,
     "wind_speed": SensorDeviceClass.WIND_SPEED,
-    "wind_gust_speed": SensorDeviceClass.WIND_GUST_SPEED,
+    # HA has no wind_gust_speed device class; gusts use wind_speed.
+    "wind_gust_speed": SensorDeviceClass.WIND_SPEED,
     "precipitation": SensorDeviceClass.PRECIPITATION,
     "irradiance": SensorDeviceClass.IRRADIANCE,
     "duration": SensorDeviceClass.DURATION,
