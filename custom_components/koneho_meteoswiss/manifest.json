@@ -1,0 +1,11 @@
+{
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://github.com/koneho-ai/ha-meteoswiss",
+  "domain": "koneho_meteoswiss",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "name": "MeteoSwiss (Koneho)",
+  "requirements": [],
+  "version": "0.2.0"
+}
