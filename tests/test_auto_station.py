@@ -6,11 +6,13 @@ import asyncio
 import copy
 
 from koneho_meteoswiss.client import MeteoSwissClient, parse_station_csv
+from koneho_meteoswiss.models import StationObservation
 from koneho_meteoswiss.stations import (
     haversine_km,
     parse_meta_points,
     parse_station_list,
     select_nearest_station,
+    station_has_core_measurements,
 )
 
 
@@ -53,13 +55,18 @@ def test_select_8808_picks_nearby_station(fixture_text):
     assert choice.has_temperature is True
 
 
-def test_select_8048_picks_nearest(fixture_text):
+def test_select_8048_prefers_core_station_within_window(fixture_text):
     point = _points(fixture_text)["804800"]
     choice = select_nearest_station(point, _coords(fixture_text), _observations(fixture_text))
     assert choice is not None
-    assert choice.code == "UEB"  # ~4.1 km, temperature present in sample
-    assert choice.distance_km < 5.0
+    # Changed in v0.2.1: UEB is nearest (~4.1 km) and reports
+    # temperature, but its sample row has no pressure, so it lacks the
+    # core set. SMA (~6.2 km) reports the full core set and is within
+    # nearest + 10 km, so the richness ranking legitimately selects it.
+    assert choice.code == "SMA"
+    assert choice.distance_km < 7.0
     assert choice.has_temperature is True
+    assert choice.has_core_measurements is True
 
 
 def test_temperature_preference(fixture_text):
@@ -82,6 +89,73 @@ def test_nearest_accepted_without_temperature(fixture_text):
     assert choice is not None
     assert choice.code == "UEB"
     assert choice.has_temperature is False
+
+
+def _station_observation(values: dict[str, float | None]) -> StationObservation:
+    return StationObservation(code="TEST", measured_at=None, values=values)
+
+
+def test_core_measurements_require_pressure_alternative():
+    core_without_pressure = _station_observation(
+        {"tre200s0": 5.0, "ure200s0": 80.0, "fu3010z0": 10.0}
+    )
+    assert station_has_core_measurements(core_without_pressure) is False
+    core_without_pressure.values["prestas0"] = 900.0
+    assert station_has_core_measurements(core_without_pressure) is True
+
+
+def test_core_station_within_preference_window_wins():
+    point = (47.0, 8.8)
+    coords = {
+        "NEAR": (47.001, 8.8),  # ~0.1 km, partial
+        "FULL": (47.09, 8.8),  # ~10.0 km, core set
+    }
+    observations = {
+        "NEAR": _station_observation(
+            {"tre200s0": 5.0, "ure200s0": 80.0, "tde200s0": 2.0}
+        ),
+        "FULL": _station_observation(
+            {
+                "tre200s0": 5.0,
+                "ure200s0": 80.0,
+                "fu3010z0": 10.0,
+                "pp0qnhs0": 1020.0,
+            }
+        ),
+    }
+
+    choice = select_nearest_station(point, coords, observations)
+
+    assert choice is not None
+    assert choice.code == "FULL"
+    assert choice.has_core_measurements is True
+
+
+def test_core_station_beyond_preference_window_does_not_win():
+    point = (47.0, 8.8)
+    coords = {
+        "NEAR": (47.001, 8.8),  # ~0.1 km, partial
+        "FULL": (47.12, 8.8),  # ~13.3 km: outside nearest + 10 km
+    }
+    observations = {
+        "NEAR": _station_observation(
+            {"tre200s0": 5.0, "ure200s0": 80.0, "tde200s0": 2.0}
+        ),
+        "FULL": _station_observation(
+            {
+                "tre200s0": 5.0,
+                "ure200s0": 80.0,
+                "fu3010z0": 10.0,
+                "prestas0": 900.0,
+            }
+        ),
+    }
+
+    choice = select_nearest_station(point, coords, observations)
+
+    assert choice is not None
+    assert choice.code == "NEAR"
+    assert choice.has_core_measurements is False
 
 
 class _FakeResponse:

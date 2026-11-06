@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from koneho_meteoswiss.client import parse_payload
 from koneho_meteoswiss.icons import icon_to_condition
@@ -33,6 +33,23 @@ def test_icon_mapping():
 def _place(fixture_bytes) -> PlaceForecast:
     payload = parse_payload(fixture_bytes("plzdetail_8808.json"))
     return PlaceForecast.from_payload(payload, "8808", "plzDetail")
+
+
+def test_climate_normals_use_annual_norm_cycle(fixture_bytes):
+    place = _place(fixture_bytes)
+    assert place.climate is not None
+
+    # The fixture's klimaGraph starts in November 2024 and contains 24
+    # monthly entries. November 2026 is therefore beyond an absolute
+    # list offset, but its climate normal is the November entry of the
+    # repeated annual ``norm`` cycle: 5.4 °C.
+    assert place.climate.current_month_norm_temperature(
+        datetime(2026, 11, 6, tzinfo=timezone.utc)
+    ) == 5.4
+    # July maps to the July normal in the same annual cycle.
+    assert place.climate.current_month_norm_temperature(
+        datetime(2026, 7, 1, tzinfo=timezone.utc)
+    ) == 19.5
 
 
 def test_daily_forecast_building(fixture_bytes):

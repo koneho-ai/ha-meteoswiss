@@ -25,12 +25,24 @@ from .models import StationObservation
 
 LatLon = tuple[float, float]
 
-# When the nearest station does not currently report temperature, a
-# temperature-reporting station is preferred instead only if it is at
-# most this much farther away (km, absolute, added to the nearest
-# station's distance). This keeps a summit station whose 2 m sensors
-# are offline (e.g. UEB) from shadowing a slightly farther full station.
+# Richer stations are preferred only within this many kilometres
+# beyond the nearest station's distance. The window was originally
+# introduced for temperature availability and now also covers the core
+# measurement set below. Keeping the window bounded prevents a distant
+# full station from displacing a much closer partial station.
 TEMP_PREFERENCE_EXTRA_KM = 10.0
+
+# Measurements that make a station broadly useful for current weather
+# conditions. Pressure may be either station pressure or QNH.
+CORE_REQUIRED_COLUMNS = ("tre200s0", "ure200s0", "fu3010z0")
+CORE_PRESSURE_COLUMNS = ("prestas0", "pp0qnhs0")
+
+
+def station_has_core_measurements(obs: StationObservation) -> bool:
+    """Whether an observation reports temperature, humidity, wind and pressure."""
+    return all(obs.get(column) is not None for column in CORE_REQUIRED_COLUMNS) and any(
+        obs.get(column) is not None for column in CORE_PRESSURE_COLUMNS
+    )
 
 
 def _float(text: str | None) -> float | None:
@@ -85,6 +97,7 @@ class StationChoice:
     code: str
     distance_km: float
     has_temperature: bool
+    has_core_measurements: bool = False
 
 
 def select_nearest_station(
@@ -95,31 +108,45 @@ def select_nearest_station(
     """Pick the SwissMetNet station to use for a forecast point.
 
     Candidates are stations present both in the station list and in the
-    latest actual-values data, sorted by haversine distance. The
-    nearest wins, with one refinement: a station currently reporting
-    temperature (``tre200s0``) is preferred — if the nearest station
-    lacks temperature but a temperature-reporting station exists within
-    ``TEMP_PREFERENCE_EXTRA_KM`` beyond the nearest distance, the
-    nearest such station is chosen instead. If no station in that
-    radius reports temperature, the nearest station is still accepted
-    and ``has_temperature`` is False (callers surface this in
-    diagnostics rather than failing).
+    latest actual-values data. The nearest station defines a preference
+    window extending ``TEMP_PREFERENCE_EXTRA_KM`` beyond its distance.
+    Within that window, ranking is:
+
+    1. stations reporting the core set (temperature, humidity, wind,
+       and station pressure or QNH);
+    2. stations reporting temperature (the pre-existing preference, so
+       a summit station with its 2 m temperature sensor offline does
+       not shadow a slightly farther measuring station);
+    3. distance.
+
+    A richer station outside the window does not displace a nearer
+    station. If no preferred station is in the window, the nearest is
+    accepted and its capability flags tell callers what it reports.
     """
-    ranked: list[tuple[float, str, bool]] = []
+    ranked: list[tuple[float, str, bool, bool]] = []
     for code, obs in observations.items():
         coords = station_coords.get(code)
         if coords is None:
             continue
         ranked.append(
-            (haversine_km(point, coords), code, obs.get("tre200s0") is not None)
+            (
+                haversine_km(point, coords),
+                code,
+                obs.get("tre200s0") is not None,
+                station_has_core_measurements(obs),
+            )
         )
     if not ranked:
         return None
     ranked.sort(key=lambda item: (item[0], item[1]))
-    nearest_distance, nearest_code, nearest_has_temp = ranked[0]
-    if nearest_has_temp:
-        return StationChoice(nearest_code, nearest_distance, True)
-    for distance, code, has_temp in ranked[1:]:
-        if has_temp and distance <= nearest_distance + TEMP_PREFERENCE_EXTRA_KM:
-            return StationChoice(code, distance, True)
-    return StationChoice(nearest_code, nearest_distance, False)
+    nearest_distance = ranked[0][0]
+    in_window = [
+        item
+        for item in ranked
+        if item[0] <= nearest_distance + TEMP_PREFERENCE_EXTRA_KM
+    ]
+    distance, code, has_temperature, has_core = min(
+        in_window,
+        key=lambda item: (not item[3], not item[2], item[0], item[1]),
+    )
+    return StationChoice(code, distance, has_temperature, has_core)

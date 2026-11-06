@@ -20,12 +20,13 @@ klimaGraph, and the HA platforms expose all of it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import ClassVar
 from zoneinfo import ZoneInfo
 
-from .const import warning_type_name
+from .const import STATION_COLUMNS, warning_type_name
 
 LOCAL_TZ = ZoneInfo("Europe/Zurich")
 UTC = timezone.utc
@@ -286,13 +287,25 @@ class ClimateGraph:
         )
 
     def current_month_norm_temperature(self, now: datetime) -> float | None:
-        """Climate-normal temperature for the month containing ``now``."""
+        """Climate-normal temperature for the month containing ``now``.
+
+        The fixture's ``temperatureGraphValues`` contains 24 monthly
+        entries beginning in November 2024. Its ``norm`` list is the
+        fixed climate-normal annual cycle, repeated after 12 entries
+        (for example, November is 5.4 °C at indices 0 and 12); ``abs``
+        is instead the rolling month's measured mean. We therefore use
+        ``norm`` and select it by calendar month modulo 12. An absolute
+        month offset would run off the end of the 24-entry list for
+        current dates in late 2026 and incorrectly produce no state.
+        """
         if self.start is None:
             return None
-        months = (now.year - self.start.year) * 12 + (now.month - self.start.month)
         values = self.temperature.get("norm") or []
-        if 0 <= months < len(values):
-            return _num(values[months])
+        if not values:
+            return None
+        cycle_index = (now.month - self.start.month) % 12
+        if cycle_index < len(values):
+            return _num(values[cycle_index])
         return None
 
 
@@ -544,14 +557,55 @@ class StationObservation:
         return self.values.get(column)
 
 
+def present_station_columns(
+    station: StationObservation | None,
+) -> tuple[str, ...]:
+    """Known station columns with a current measured value.
+
+    SwissMetNet rows contain every CSV column, using None for ``-``.
+    Only present values should produce sensor entities; otherwise a
+    partial station acquires a permanent set of ``unknown`` sensors for
+    instruments it does not have (or whose values are currently absent).
+    """
+    if station is None:
+        return ()
+    return tuple(
+        column for column in STATION_COLUMNS if station.get(column) is not None
+    )
+
+
+def stale_station_sensor_unique_ids(
+    unique_ids: Iterable[str],
+    base_unique_id: str,
+    current_columns: Iterable[str],
+) -> tuple[str, ...]:
+    """Station-sensor unique IDs that are no longer backed by data.
+
+    This is the pure filtering logic used by sensor-platform registry
+    cleanup. Only IDs under this entry's ``_station_`` namespace are
+    considered; all other entities' IDs are returned untouched (that
+    is, not included in the stale set).
+    """
+    prefix = f"{base_unique_id}_station_"
+    current_unique_ids = {f"{prefix}{column}" for column in current_columns}
+    return tuple(
+        unique_id
+        for unique_id in unique_ids
+        if unique_id.startswith(prefix) and unique_id not in current_unique_ids
+    )
+
+
 def station_current_conditions(
     station: StationObservation | None,
 ) -> dict[str, float | int | None]:
     """Map a station row onto weather-entity current conditions.
 
-    Keys match the HA weather entity's native fields. Pressure prefers
-    QNH (``pp0qnhs0``) and falls back to station pressure
-    (``prestas0``). Missing ('-'/None) values stay None.
+    Keys match the fields consumed by the HA weather entity. Pressure
+    prefers QNH (``pp0qnhs0``) and falls back to station pressure
+    (``prestas0``). Missing ('-'/None) values stay None. Humidity keeps
+    the key ``humidity`` because HA's ``WeatherEntity`` exposes a
+    ``humidity`` property; unlike temperature/pressure/wind, it has no
+    ``native_humidity`` property.
     """
     result: dict[str, float | int | None] = {
         "humidity": None,

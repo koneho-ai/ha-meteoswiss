@@ -56,8 +56,10 @@ Settings → Devices & Services → Add Integration → **MeteoSwiss (Koneho)**:
   `UEB` (Uetliberg), `SMA` (Zürich Fluntern) or `KLO` (Zürich Kloten).
   **Leave it empty and the nearest station is selected automatically**
   (haversine distance from the postcode point to the stations in the
-  current SwissMetNet data; a station currently reporting temperature
-  is preferred when the nearest one does not). A manually entered code
+  current SwissMetNet data. Within 10 km beyond the nearest station's
+  distance, a station reporting the core set — temperature, humidity,
+  wind, and station pressure or QNH — is preferred; failing that, a
+  temperature-reporting station is preferred). A manually entered code
   always wins.
 
 One config entry = one postcode (+ optional station). Add the
@@ -112,13 +114,15 @@ Per place:
   validity, links, and the warnings overview)
 
 Per station (configured manually, or the auto-selected nearest
-station), one sensor per CSV
-column present for that station — up to: temperature, precipitation
+station), sensors are created only for CSV columns that have a value
+in that station's current row — up to: temperature, precipitation
 (10 min), sunshine duration (10 min), global radiation, humidity, dew
 point, wind direction, wind speed, wind gust, station pressure, QFF,
 QNH, 850/700 hPa pressures, and the tower instruments (wind direction,
-wind speed, gust, temperature, humidity, dew point). Columns reporting
-`-` show as unavailable values rather than breaking the station.
+wind speed, gust, temperature, humidity, dew point). Columns whose
+current value is `-` do not create sensors; on upgrade, stale station
+sensor registry entries for columns without current data are removed
+automatically.
 
 ## Icon → condition mapping
 
@@ -129,6 +133,20 @@ State" symbol table: 1 clear, 2–3 partly cloudy, 4 cloudy, 5 rain,
 shower, 11–12 fog, 13 freezing rain (→ rainy), 14 thunderstorm,
 15 drizzle (→ rainy), 16 sandstorm (→ windy). Unmapped codes yield no
 condition but remain visible on the icon-code sensor.
+
+## Changelog
+
+- **0.2.1** — Station sensors are created only for columns with a
+  current value (and stale registry entries for missing columns are
+  removed on setup); automatic station selection prefers a nearby
+  station with the core temperature/humidity/wind/pressure set;
+  climate normals expose this month's normal temperature; and the
+  weather entity's station humidity is exposed through HA's
+  `humidity` property. Also fixes `weather.get_forecasts`, which
+  returned `unknown_error` because the entity implemented a method
+  HA never calls — it now implements the `async_forecast_daily()` /
+  `async_forecast_hourly()` dispatch methods HA actually uses, so
+  forecast cards work again.
 
 ## Development
 

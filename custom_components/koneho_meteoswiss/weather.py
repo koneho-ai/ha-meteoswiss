@@ -89,7 +89,11 @@ class MeteoSwissWeather(CoordinatorEntity[MeteoSwissCoordinator], WeatherEntity)
         return station_current_conditions(data.station if data else None)
 
     @property
-    def native_humidity(self) -> float | None:
+    def humidity(self) -> float | None:
+        # HA's WeatherEntity reads ``humidity`` (already a percentage);
+        # there is no ``native_humidity`` property in the HA 2026.11
+        # weather API. Defining only native_humidity silently left the
+        # weather entity's humidity at None even with station data.
         return self._station_conditions["humidity"]
 
     @property
@@ -112,8 +116,21 @@ class MeteoSwissWeather(CoordinatorEntity[MeteoSwissCoordinator], WeatherEntity)
     def wind_bearing(self) -> int | None:
         return self._station_conditions["wind_bearing"]
 
-    async def async_get_forecasts(self, forecast_type: str) -> list[Forecast]:
-        """Return daily or hourly forecasts in HA Forecast shape."""
+    async def async_forecast_daily(self) -> list[Forecast]:
+        """Return the daily forecast.
+
+        This (and ``async_forecast_hourly``) is the method HA's
+        ``weather.get_forecasts`` service actually dispatches to; an
+        ``async_get_forecasts`` method is never called by HA.
+        """
+        return self._build_forecasts("daily")
+
+    async def async_forecast_hourly(self) -> list[Forecast]:
+        """Return the hourly forecast (see ``async_forecast_daily``)."""
+        return self._build_forecasts("hourly")
+
+    def _build_forecasts(self, forecast_type: str) -> list[Forecast]:
+        """Build daily or hourly forecasts in HA Forecast shape."""
         place = self._place
         if forecast_type == "hourly":
             raw = place.hourly_forecast()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import copy
+from pathlib import Path
 
 from koneho_meteoswiss.client import parse_station_csv
 from koneho_meteoswiss.models import station_current_conditions
@@ -21,6 +23,31 @@ def test_full_mapping(fixture_text):
     assert conditions["wind_speed"] == 4.3  # fu3010z0
     assert conditions["wind_gust_speed"] == 7.2  # fu3010z1
     assert conditions["wind_bearing"] == 220  # dkl010z0, as int
+
+
+def test_weather_entity_defines_ha_humidity_property():
+    weather_py = (
+        Path(__file__).resolve().parent.parent
+        / "custom_components"
+        / "koneho_meteoswiss"
+        / "weather.py"
+    )
+    tree = ast.parse(weather_py.read_text(encoding="utf-8"))
+    weather_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MeteoSwissWeather"
+    )
+    method_names = {
+        node.name
+        for node in weather_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    # Home Assistant's WeatherEntity reads ``humidity``; there is no
+    # ``native_humidity`` property in its current-conditions API.
+    assert "humidity" in method_names
+    assert "native_humidity" not in method_names
 
 
 def test_pressure_fallback_to_station_pressure(fixture_text):

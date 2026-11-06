@@ -60,7 +60,7 @@ CONF_STATION = "station"
 UPDATE_INTERVAL = timedelta(minutes=15)
 TIMEZONE = "Europe/Zurich"
 
-USER_AGENT = "Home Assistant koneho_meteoswiss/0.2.0"
+USER_AGENT = "Home Assistant koneho_meteoswiss/0.2.1"
 
 # MeteoSwiss warning type codes (warnType in plzDetail warnings).
 # Best-effort table: the numbering follows the hazard categories of the

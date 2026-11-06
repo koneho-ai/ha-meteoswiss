@@ -19,7 +19,7 @@ VALID = {
         "ENERGY", "POWER", "BATTERY", "ILLUMINANCE", "AQI",
     },
     "BinarySensorDeviceClass": {"PROBLEM", "CONNECTIVITY", "PRESENCE", "MOTION"},
-    "SensorStateClass": {"MEASUREMENT", "TOTAL", "TOTAL_INCREASING"},
+    "SensorStateClass": {"MEASUREMENT", "MEASUREMENT_ANGLE", "TOTAL", "TOTAL_INCREASING"},
     "WeatherEntityFeature": {"FORECAST_DAILY", "FORECAST_HOURLY", "FORECAST_TWICE_DAILY"},
 }
 

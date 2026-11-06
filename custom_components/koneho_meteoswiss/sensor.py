@@ -51,7 +51,13 @@ from .const import (
     STATION_COLUMNS,
 )
 from .coordinator import MeteoSwissCoordinator
-from .models import MeteoData, PlaceForecast, StationObservation
+from .models import (
+    MeteoData,
+    PlaceForecast,
+    StationObservation,
+    present_station_columns,
+    stale_station_sensor_unique_ids,
+)
 
 _DEVICE_CLASSES = {
     "temperature": SensorDeviceClass.TEMPERATURE,
@@ -129,7 +135,9 @@ PLACE_SENSORS: tuple[SensorEntityDescription, ...] = (
         name="Wind direction",
         native_unit_of_measurement=DEGREE,
         device_class=SensorDeviceClass.WIND_DIRECTION,
-        state_class=SensorStateClass.MEASUREMENT,
+        # HA requires MEASUREMENT_ANGLE (not MEASUREMENT) for the
+        # wind_direction device class.
+        state_class=SensorStateClass.MEASUREMENT_ANGLE,
         icon="mdi:compass-outline",
     ),
     SensorEntityDescription(
@@ -158,6 +166,8 @@ PLACE_SENSORS: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
         key="climate_normals",
         name="Climate normals",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:chart-bell-curve",
     ),
@@ -168,6 +178,62 @@ PLACE_SENSORS: tuple[SensorEntityDescription, ...] = (
         icon="mdi:chart-line",
     ),
 )
+
+
+def _remove_stale_station_sensor_entities(
+    hass: HomeAssistant, entry: ConfigEntry, current_columns: tuple[str, ...]
+) -> None:
+    """Remove registry entries for station columns with no current value.
+
+    Upgraded installs created one entity for every CSV column before
+    v0.2.1, including instruments a station does not report. Removing
+    only this config entry's sensor-platform entries whose station
+    unique ID is absent from the current, present-column set lets those
+    dead entities disappear without touching place sensors or entries
+    belonging to other integrations/config entries.
+
+    The entity-registry import is local and guarded: this module's pure
+    selection/model helpers remain testable in environments where HA is
+    unavailable, and a registry API difference should not prevent the
+    remaining sensors from being set up.
+    """
+    try:
+        from homeassistant.helpers import entity_registry as er
+    except ImportError:  # pragma: no cover - HA is present in production
+        return
+
+    try:
+        registry = er.async_get(hass)
+        try:
+            registry_entries = er.async_entries_for_config_entry(
+                registry, entry.entry_id
+            )
+        except (AttributeError, TypeError):
+            registry_entries = [
+                registry_entry
+                for registry_entry in registry.entities.values()
+                if registry_entry.config_entry_id == entry.entry_id
+            ]
+        candidates = [
+            registry_entry
+            for registry_entry in list(registry_entries)
+            if getattr(registry_entry, "platform", None) == DOMAIN
+            and getattr(registry_entry, "domain", None) == "sensor"
+        ]
+        stale_unique_ids = set(
+            stale_station_sensor_unique_ids(
+                (getattr(registry_entry, "unique_id", "") for registry_entry in candidates),
+                entry.unique_id or entry.entry_id,
+                current_columns,
+            )
+        )
+        for registry_entry in candidates:
+            if registry_entry.unique_id in stale_unique_ids:
+                registry.async_remove(registry_entry.entity_id)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        # Registry cleanup is a migration nicety, not a reason to fail
+        # the whole sensor platform if a future HA registry shape moves.
+        return
 
 
 async def async_setup_entry(
@@ -181,12 +247,13 @@ async def async_setup_entry(
     ]
     data: MeteoData | None = coordinator.data
     if data is not None and data.station is not None:
+        station_columns = present_station_columns(data.station)
+        _remove_stale_station_sensor_entities(hass, entry, station_columns)
         # Use the *effective* station code (manually configured or
         # auto-selected) from the coordinator data for naming.
         entities.extend(
             MeteoSwissStationSensor(coordinator, entry, column, data.station.code)
-            for column in data.station.values
-            if column in STATION_COLUMNS
+            for column in station_columns
         )
     async_add_entities(entities)
 
@@ -418,9 +485,10 @@ class MeteoSwissStationSensor(_BaseSensor):
 
     @property
     def available(self) -> bool:
-        # A column that exists but currently reports '-' still yields an
-        # entity whose state is unknown/None, so treat presence of the
-        # station row as available.
+        # Entities are created only for columns present at platform
+        # setup. A later individual '-' should not make the whole
+        # entity unavailable merely because its current value is None;
+        # presence of the station row is the availability signal here.
         return super().available and self._station is not None
 
     @property
