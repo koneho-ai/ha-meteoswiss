@@ -9,6 +9,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -44,6 +45,9 @@ class MeteoSwissWarningsSensor(
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_attribution = ATTRIBUTION
     _attr_icon = "mdi:alert"
+    # The full warning records live in the attributes; keep them out
+    # of the recorder so long warning texts don't bloat the database.
+    _entity_component_unrecorded_attributes = MATCH_ALL
 
     def __init__(self, coordinator: MeteoSwissCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -63,8 +67,9 @@ class MeteoSwissWarningsSensor(
 
     @property
     def is_on(self) -> bool:
-        place = self._place
-        return bool(place.warnings or place.warnings_overview)
+        # Only warnings still in force count: expired records the API
+        # still ships must not keep the sensor on.
+        return bool(self._place.active_warnings())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

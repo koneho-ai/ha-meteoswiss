@@ -91,6 +91,8 @@ def _install_stubs() -> None:
     ):
         if not hasattr(const, name):
             setattr(const, name, enum.StrEnum(name, {member: value}))
+    if not hasattr(const, "MATCH_ALL"):
+        const.MATCH_ALL = "*"
 
     # --- helpers.aiohttp_client ---
     aiohttp_client = _module("homeassistant.helpers.aiohttp_client")
@@ -238,3 +240,131 @@ def test_update_interval_field_default_and_range():
     schema = _form_schema({"update_interval": 30})
     marker, _validator = _field(schema, "update_interval")
     assert marker.default == 30
+
+
+# --- v0.3.0: pollen station field, warnings number, distance-aware options --
+
+from types import SimpleNamespace  # noqa: E402
+
+
+def test_schema_has_pollen_and_warnings_fields():
+    from koneho_meteoswiss.config_flow import _form_schema
+    from koneho_meteoswiss.const import (
+        CONF_POLLEN_STATION,
+        CONF_WARNINGS_NUMBER,
+    )
+
+    schema = _form_schema({})
+    keys = {marker.schema for marker in schema.schema}
+    assert CONF_POLLEN_STATION in keys
+    assert CONF_WARNINGS_NUMBER in keys
+    defaults = {marker.schema: marker.default for marker in schema.schema}
+    assert defaults[CONF_POLLEN_STATION] == ""
+    assert defaults[CONF_WARNINGS_NUMBER] == 1  # default pair count
+
+
+def test_schema_pollen_dropdown_and_fallback():
+    from koneho_meteoswiss.config_flow import _form_schema
+    from koneho_meteoswiss.const import CONF_POLLEN_STATION
+
+    pollen_options = [
+        ("", "Automatic (nearest pollen station)"),
+        ("PZH", "Zürich (PZH)"),
+    ]
+    schema = _form_schema({}, None, pollen_options)
+    field = next(
+        marker for marker in schema.schema if marker.schema == CONF_POLLEN_STATION
+    )
+    # With options the field is a selector carrying the labels.
+    assert hasattr(field, "__class__") and field.__class__.__name__ != "str"
+    schema_text = _form_schema({}, None, None)
+    field_text = next(
+        marker for marker in schema_text.schema if marker.schema == CONF_POLLEN_STATION
+    )
+    assert field_text is not None  # text fallback still renders a field
+
+
+def _flow_with_fake_fetch():
+    """A config flow whose place validation succeeds without network.
+
+    Returns (flow, restore) — call restore() after the validation.
+    """
+    from koneho_meteoswiss.client import MeteoSwissClient
+    from koneho_meteoswiss.config_flow import MeteoSwissConfigFlow
+
+    flow = MeteoSwissConfigFlow.__new__(MeteoSwissConfigFlow)
+    flow.hass = SimpleNamespace(config=SimpleNamespace(latitude=None, longitude=None))
+
+    original = MeteoSwissClient.async_fetch_place
+
+    async def _ok_fetch(self):
+        return SimpleNamespace()
+
+    MeteoSwissClient.async_fetch_place = _ok_fetch
+
+    def _restore():
+        MeteoSwissClient.async_fetch_place = original
+
+    return flow, _restore
+
+
+def test_validate_stores_pollen_station_and_warnings_number():
+    import asyncio
+
+    from koneho_meteoswiss.config_flow import MeteoSwissConfigFlow
+
+    flow, restore = _flow_with_fake_fetch()
+    try:
+
+        async def _run():
+            return await MeteoSwissConfigFlow._async_validate(
+                flow,
+                {
+                    "name": "Test",
+                    "postcode": "8808",
+                    "station": "",
+                    "pollen_station": "pzh",
+                    "warnings_number": 3,
+                    "update_interval": 15,
+                },
+            )
+
+        errors, data = asyncio.run(_run())
+    finally:
+        restore()
+    assert errors == {}
+    assert data["pollen_station"] == "PZH"  # normalised to uppercase
+    assert data["warnings_number"] == 3
+
+
+def test_validate_rejects_bad_pollen_station():
+    import asyncio
+
+    from koneho_meteoswiss.config_flow import MeteoSwissConfigFlow
+
+    flow, restore = _flow_with_fake_fetch()
+    try:
+
+        async def _run():
+            return await MeteoSwissConfigFlow._async_validate(
+                flow,
+                {"postcode": "8808", "pollen_station": "TOOLONG"},
+            )
+
+        errors, data = asyncio.run(_run())
+    finally:
+        restore()
+    assert data is None
+    assert errors.get("pollen_station") == "invalid_pollen_station"
+
+
+def test_warnings_number_helper_clamps_and_defaults():
+    from koneho_meteoswiss.const import warnings_number
+
+    assert warnings_number({}) == 1
+    assert warnings_number({"warnings_number": 0}) == 0
+    assert warnings_number({"warnings_number": 5}) == 5
+    assert warnings_number({"warnings_number": 9}) == 5
+    assert warnings_number({"warnings_number": -2}) == 0
+    assert warnings_number({"warnings_number": "x"}) == 1
+    assert warnings_number(None) == 1

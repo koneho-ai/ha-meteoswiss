@@ -6,6 +6,13 @@ SensorDeviceClass.DEW_POINT and SensorDeviceClass.WIND_GUST_SPEED do not
 exist (dew point -> TEMPERATURE, gusts -> WIND_SPEED). HA is not installed
 in the test environment, so this checks the source statically against a
 curated allowlist — extend it only after checking the HA source/docs.
+
+ENUM was added in 0.3.0 for the pollen level and warning level sensors;
+verified against the HA sensor const docs (sensor device classes list)
+and the developers' enum-sensor guide on 2026-11-06: ENUM exists, and
+requires an ``options`` list on the entity. There is NO pollen device
+class in the list, so the pollen concentration sensors use no device
+class — do not invent one.
 """
 import re
 from pathlib import Path
@@ -16,7 +23,7 @@ VALID = {
     "SensorDeviceClass": {
         "TEMPERATURE", "HUMIDITY", "PRESSURE", "WIND_SPEED", "WIND_DIRECTION",
         "PRECIPITATION", "IRRADIANCE", "DURATION", "TIMESTAMP", "DATE",
-        "ENERGY", "POWER", "BATTERY", "ILLUMINANCE", "AQI",
+        "ENERGY", "POWER", "BATTERY", "ILLUMINANCE", "AQI", "ENUM",
     },
     "BinarySensorDeviceClass": {"PROBLEM", "CONNECTIVITY", "PRESENCE", "MOTION"},
     "SensorStateClass": {"MEASUREMENT", "MEASUREMENT_ANGLE", "TOTAL", "TOTAL_INCREASING"},

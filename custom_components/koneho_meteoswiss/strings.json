@@ -1,1 +1,166 @@
-{"config":{"error":{"cannot_connect":"Could not fetch forecast data for this postcode from MeteoSwiss. Check the postcode and your network connection.","invalid_postcode":"Enter a valid 4-digit Swiss postcode (1000-9999).","invalid_station":"Station codes are 3 uppercase letters (e.g. UEB, SMA, KLO). Leave empty = automatic (nearest station).","invalid_update_interval":"Enter a whole number of minutes between 1 and 180."},"step":{"user":{"data":{"name":"Place name (optional)","postcode":"Postcode (4-digit Swiss PLZ)","station":"SwissMetNet station","update_interval":"Update interval (minutes)"},"description":"Add a MeteoSwiss forecast for a Swiss postcode. Choose \"Automatic\" to use the nearest SwissMetNet station, or pick a specific station from the list.","title":"MeteoSwiss place"},"reconfigure":{"data":{"name":"Place name (optional)","postcode":"Postcode (4-digit Swiss PLZ)","station":"SwissMetNet station","update_interval":"Update interval (minutes)"},"description":"Change this place. Choose \"Automatic\" as the station to use the nearest SwissMetNet station automatically.","title":"Reconfigure MeteoSwiss place"}}},"entity":{"binary_sensor":{"warnings":{"name":"Warnings active"}},"sensor":{"climate_normals":{"name":"Climate normals"},"current_icon_code":{"name":"Current icon code"},"forecast_graph":{"name":"Forecast graph data"},"precipitation_probability_max_today":{"name":"Max precipitation probability today"},"precipitation_today":{"name":"Precipitation today"},"sunrise":{"name":"Sunrise"},"sunset":{"name":"Sunset"},"sunshine_today":{"name":"Sunshine today"},"warnings":{"name":"Warnings"},"wind_direction_current":{"name":"Wind direction"},"wind_gust_current":{"name":"Wind gust"},"wind_max_today":{"name":"Max wind today"},"wind_speed_current":{"name":"Wind speed"}}},"issues":{"manual_station_no_data":{"title":"Station {station} is not reporting data","description":"The manually configured SwissMetNet station {station} has been missing from the station data for several consecutive updates. It may have been retired or renamed, or its feed may be interrupted. Current conditions for this place will be stale until it reports again. Check the station in the integration configuration (Reconfigure), or switch it to \"Automatic\" to use the nearest station instead. This issue clears itself once the station reports again."}}}
+{
+  "config": {
+    "error": {
+      "cannot_connect": "Could not fetch forecast data for this postcode from MeteoSwiss. Check the postcode and your network connection.",
+      "invalid_postcode": "Enter a valid 4-digit Swiss postcode (1000-9999).",
+      "invalid_station": "Station codes are 3 uppercase letters (e.g. UEB, SMA, KLO). Leave empty = automatic (nearest station).",
+      "invalid_update_interval": "Enter a whole number of minutes between 1 and 180.",
+      "invalid_pollen_station": "Pollen station codes are 3 uppercase letters (e.g. PZH, PBE). Leave empty = automatic (nearest pollen station)."
+    },
+    "step": {
+      "user": {
+        "data": {
+          "name": "Place name (optional)",
+          "postcode": "Postcode (4-digit Swiss PLZ)",
+          "station": "SwissMetNet station",
+          "pollen_station": "Pollen station",
+          "warnings_number": "Warning sensor pairs (0-5)",
+          "update_interval": "Update interval (minutes)"
+        },
+        "description": "Add a MeteoSwiss forecast for a Swiss postcode. Choose \"Automatic\" to use the nearest SwissMetNet station, or pick a specific station from the list.",
+        "title": "MeteoSwiss place"
+      },
+      "reconfigure": {
+        "data": {
+          "name": "Place name (optional)",
+          "postcode": "Postcode (4-digit Swiss PLZ)",
+          "station": "SwissMetNet station",
+          "pollen_station": "Pollen station",
+          "warnings_number": "Warning sensor pairs (0-5)",
+          "update_interval": "Update interval (minutes)"
+        },
+        "description": "Change this place. Choose \"Automatic\" as the station to use the nearest SwissMetNet station automatically.",
+        "title": "Reconfigure MeteoSwiss place"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "warnings": {
+        "name": "Warnings active"
+      }
+    },
+    "sensor": {
+      "climate_normals": {
+        "name": "Climate normals"
+      },
+      "current_icon_code": {
+        "name": "Current icon code"
+      },
+      "forecast_graph": {
+        "name": "Forecast graph data"
+      },
+      "pollen_alder": {
+        "name": "Pollen Alder"
+      },
+      "pollen_alder_level": {
+        "name": "Pollen Alder level"
+      },
+      "pollen_ash": {
+        "name": "Pollen Ash"
+      },
+      "pollen_ash_level": {
+        "name": "Pollen Ash level"
+      },
+      "pollen_beech": {
+        "name": "Pollen Beech"
+      },
+      "pollen_beech_level": {
+        "name": "Pollen Beech level"
+      },
+      "pollen_birch": {
+        "name": "Pollen Birch"
+      },
+      "pollen_birch_level": {
+        "name": "Pollen Birch level"
+      },
+      "pollen_grasses": {
+        "name": "Pollen Grasses"
+      },
+      "pollen_grasses_level": {
+        "name": "Pollen Grasses level"
+      },
+      "pollen_hazel": {
+        "name": "Pollen Hazel"
+      },
+      "pollen_hazel_level": {
+        "name": "Pollen Hazel level"
+      },
+      "pollen_measured_at": {
+        "name": "Pollen measurement"
+      },
+      "pollen_oak": {
+        "name": "Pollen Oak"
+      },
+      "pollen_oak_level": {
+        "name": "Pollen Oak level"
+      },
+      "precipitation_probability_max_today": {
+        "name": "Max precipitation probability today"
+      },
+      "precipitation_today": {
+        "name": "Precipitation today"
+      },
+      "sunrise": {
+        "name": "Sunrise"
+      },
+      "sunset": {
+        "name": "Sunset"
+      },
+      "sunshine_today": {
+        "name": "Sunshine today"
+      },
+      "warning_1_level": {
+        "name": "Warning 1 level"
+      },
+      "warning_1_type": {
+        "name": "Warning 1 type"
+      },
+      "warning_2_level": {
+        "name": "Warning 2 level"
+      },
+      "warning_2_type": {
+        "name": "Warning 2 type"
+      },
+      "warning_3_level": {
+        "name": "Warning 3 level"
+      },
+      "warning_3_type": {
+        "name": "Warning 3 type"
+      },
+      "warning_4_level": {
+        "name": "Warning 4 level"
+      },
+      "warning_4_type": {
+        "name": "Warning 4 type"
+      },
+      "warning_5_level": {
+        "name": "Warning 5 level"
+      },
+      "warning_5_type": {
+        "name": "Warning 5 type"
+      },
+      "warnings": {
+        "name": "Warnings"
+      },
+      "wind_direction_current": {
+        "name": "Wind direction"
+      },
+      "wind_gust_current": {
+        "name": "Wind gust"
+      },
+      "wind_max_today": {
+        "name": "Max wind today"
+      },
+      "wind_speed_current": {
+        "name": "Wind speed"
+      }
+    }
+  },
+  "issues": {
+    "manual_station_no_data": {
+      "title": "Station {station} is not reporting data",
+      "description": "The manually configured SwissMetNet station {station} has been missing from the station data for several consecutive updates. It may have been retired or renamed, or its feed may be interrupted. Current conditions for this place will be stale until it reports again. Check the station in the integration configuration (Reconfigure), or switch it to \"Automatic\" to use the nearest station instead. This issue clears itself once the station reports again."
+    }
+  }
+}

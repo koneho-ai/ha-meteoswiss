@@ -201,6 +201,12 @@ def _session(fixture_bytes, fixture_text) -> _FakeSession:
             "VQHA98": b"Station/Location;Date;rre150z0\n",
             "meta_point": fixture_text("meta_points_sample.csv").encode("latin-1"),
             "messnetz": fixture_text("station_list_sample.csv").encode("latin-1"),
+            # Pollen (v0.3.0): the client now also resolves pollen on
+            # every update; serve the captured fixtures for it. The
+            # meta CSV key must come before "meta_point" is checked —
+            # matching is by substring in insertion order.
+            "ogd-pollen": fixture_bytes("pollen_meta_stations.csv"),
+            "messwerte-pollen": fixture_bytes("pollen_birke.json"),
         }
     )
 

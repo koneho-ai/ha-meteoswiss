@@ -26,10 +26,29 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import ClassVar
 from zoneinfo import ZoneInfo
 
-from .const import STATION_COLUMNS, warning_type_name
+from .const import (
+    STATION_COLUMNS,
+    warning_level_color,
+    warning_level_name,
+    warning_type_name,
+)
 
 LOCAL_TZ = ZoneInfo("Europe/Zurich")
 UTC = timezone.utc
+
+# The app API uses 32767 (Int16 max) as a "no data" sentinel in the
+# currentWeather block (icon codes and temperature).
+MISSING_VALUE_SENTINEL = 32767
+
+
+def _num_or_none_sentinel(value: object) -> float | None:
+    num = _num(value)
+    return None if num is None or num == MISSING_VALUE_SENTINEL else num
+
+
+def _int_or_none_sentinel(value: object) -> int | None:
+    num = _int(value)
+    return None if num is None or num == MISSING_VALUE_SENTINEL else num
 
 
 def to_datetime(value: object) -> datetime | None:
@@ -83,12 +102,22 @@ class CurrentWeather:
     @classmethod
     def from_dict(cls, data: dict) -> "CurrentWeather":
         return cls(
-            icon=_int(data.get("icon")),
-            icon_v2=_int(data.get("iconV2")),
-            temperature=_num(data.get("temperature")),
+            icon=_int_or_none_sentinel(data.get("icon")),
+            icon_v2=_int_or_none_sentinel(data.get("iconV2")),
+            temperature=_num_or_none_sentinel(data.get("temperature")),
             time=to_datetime(data.get("time")),
             raw=dict(data),
         )
+
+    @property
+    def condition_icon(self) -> int | None:
+        """Icon code to derive the current condition from.
+
+        The V2 icon set is preferred when present — it is the newer
+        symbol set and carries the night variants — with the legacy
+        icon as fallback when V2 is missing (or the sentinel).
+        """
+        return self.icon_v2 if self.icon_v2 is not None else self.icon
 
 
 @dataclass
@@ -348,20 +377,50 @@ class PlaceForecast:
 
     # -- Warnings --------------------------------------------------------------
 
-    def highest_warning(self) -> dict | None:
-        """The full warning record with the highest warnLevel, if any.
+    def active_warnings(self, now: datetime | None = None) -> list[dict]:
+        """Warnings in force at ``now``, most severe first.
 
-        Falls back to the warnings overview entries when the payload
-        carries no full records.
+        Full warning records whose ``validTo`` has passed are
+        expired and excluded (the app API keeps recently ended
+        warnings in the payload for a while). Overview entries carry
+        no validity window, so they are used as-is when the payload
+        has no full records. When full records exist they are the
+        authority: if all of them expired, nothing is active even if
+        the overview still lists the type.
         """
-        pool = self.warnings or self.warnings_overview
-        if not pool:
-            return None
-        return max(pool, key=lambda w: _num(w.get("warnLevel")) or 0)
+        if now is None:
+            now = datetime.now(UTC)
+        if self.warnings:
+            pool = [
+                warning
+                for warning in self.warnings
+                if (valid_to := to_datetime(warning.get("validTo"))) is None
+                or valid_to >= now
+            ]
+        else:
+            pool = list(self.warnings_overview)
+        return sorted(
+            pool, key=lambda w: _num(w.get("warnLevel")) or 0, reverse=True
+        )
 
-    def warnings_summary(self) -> dict:
+    def highest_warning(self, now: datetime | None = None) -> dict | None:
+        """The active warning record with the highest warnLevel."""
+        active = self.active_warnings(now)
+        return active[0] if active else None
+
+    def warning_at_rank(
+        self, rank: int, now: datetime | None = None
+    ) -> dict | None:
+        """Active warning at 0-based ``rank`` (0 = most severe)."""
+        active = self.active_warnings(now)
+        if 0 <= rank < len(active):
+            return warning_details(active[rank])
+        return None
+
+    def warnings_summary(self, now: datetime | None = None) -> dict:
         """Readable summary of the active warnings (for the sensor)."""
-        highest = self.highest_warning()
+        active = self.active_warnings(now)
+        highest = active[0] if active else None
         if highest is None:
             return {
                 "state": "None",
@@ -372,43 +431,39 @@ class PlaceForecast:
                 "texts": [],
                 "text_joined": "",
                 "valid_from": None,
+                "warnings": [],
             }
         level = _int(highest.get("warnLevel"))
         type_name = warning_type_name(highest.get("warnType"))
         state = f"Level {level}: {type_name}" if level is not None else type_name
         texts = [
             str(w["text"]).strip()
-            for w in self.warnings
+            for w in active
             if w.get("text") and str(w["text"]).strip()
         ]
         types = sorted(
             {
                 t
-                for t in (
-                    _int(w.get("warnType"))
-                    for w in self.warnings + self.warnings_overview
-                )
+                for t in (_int(w.get("warnType")) for w in active)
                 if t is not None
             }
         )
         valid_from = to_datetime(highest.get("validFrom"))
         levels = [
             lvl
-            for lvl in (
-                _int(w.get("warnLevel"))
-                for w in self.warnings + self.warnings_overview
-            )
+            for lvl in (_int(w.get("warnLevel")) for w in active)
             if lvl is not None
         ]
         return {
             "state": state[:255],
-            "count": len(self.warnings) or len(self.warnings_overview),
+            "count": len(active),
             "max_level": max(levels) if levels else None,
             "warn_types": types,
             "warn_type_names": [warning_type_name(t) for t in types],
             "texts": texts,
             "text_joined": "\n\n".join(texts),
             "valid_from": valid_from.isoformat() if valid_from else None,
+            "warnings": active,
         }
 
     # -- Aggregates used by the HA platforms ---------------------------------
@@ -466,14 +521,25 @@ class PlaceForecast:
             "wind_gust_max": float(max(gust)) if gust else None,
         }
 
-    def hourly_forecast(self) -> list[dict]:
+    def hourly_forecast(self, now: datetime | None = None) -> list[dict]:
         """Hourly forecast entries (HA Forecast key names, plain dicts).
 
         One entry per ``temperatureMean1h`` point. 3-hourly series are
         sampled by block (index ``i // 3``). The 1h precipitation series
         is shorter than the temperature series in the live payload
-        (172 vs 192 values); it is aligned to the *end* of the window,
-        i.e. its last value belongs to the last temperature hour.
+        (172 vs 192 values); it begins at the graph's
+        ``startLowResolution`` point, which in every observed payload
+        coincides with aligning it to the *end* of the window, i.e.
+        its last value belongs to the last temperature hour (see the
+        README's precipitation-alignment note).
+
+        When ``now`` is given, entries before the current hour are
+        dropped: the graph window starts at local midnight, so
+        without filtering the hourly forecast would lead with hours
+        that are already over. Each entry also carries the forecast
+        sunshine minutes for its hour under ``sunshine`` (the HA
+        Forecast dictionary has no sunshine key in HA 2026.11, so the
+        weather entity does not forward it; it stays available here).
         """
         from .icons import icon_to_condition
 
@@ -491,17 +557,25 @@ class PlaceForecast:
         wind1h = graph.get("windSpeed1h")
         gust1h = graph.get("gustSpeed1h")
         dir3h = graph.get("windDirection3h")
+        sunshine1h = graph.get("sunshine1h")
 
         def at(series: list, idx: int):
             return series[idx] if series and 0 <= idx < len(series) else None
 
+        first_index = 0
+        if now is not None:
+            current_hour = now.replace(minute=0, second=0, microsecond=0)
+            elapsed_hours = (current_hour - graph.start).total_seconds() / 3600
+            if elapsed_hours > 0:
+                first_index = min(int(elapsed_hours), len(temps))
+
         entries: list[dict] = []
-        for idx, temp in enumerate(temps):
+        for idx in range(first_index, len(temps)):
             icon = at(icons3h, idx // 3)
             entry = {
                 "datetime": (graph.start + timedelta(hours=idx)).isoformat(),
                 "condition": icon_to_condition(icon),
-                "native_temperature": temp,
+                "native_temperature": temps[idx],
                 "native_templow": at(temps_min, idx),
                 "native_apparent_temperature": at(temps_max, idx),
                 "native_precipitation": at(precip, idx - precip_offset),
@@ -509,6 +583,7 @@ class PlaceForecast:
                 "native_wind_speed": at(wind1h, idx),
                 "native_wind_gust_speed": at(gust1h, idx),
                 "wind_bearing": at(dir3h, idx // 3),
+                "sunshine": at(sunshine1h, idx),
                 "icon_code": icon,
                 "icon_code_v2": at(icons3h_v2, idx // 3),
             }
@@ -542,6 +617,31 @@ class PlaceForecast:
             }
             entries.append(entry)
         return entries
+
+
+def warning_details(warning: dict) -> dict:
+    """Normalised detail dict for one warning record.
+
+    Used by the per-rank warning sensors: type/level names resolved,
+    validity window as ISO strings, links and outlook passed through
+    from the payload record.
+    """
+    level = _int(warning.get("warnLevel"))
+    valid_from = to_datetime(warning.get("validFrom"))
+    valid_to = to_datetime(warning.get("validTo"))
+    return {
+        "type_name": warning_type_name(warning.get("warnType")),
+        "type_code": _int(warning.get("warnType")),
+        "level": warning_level_name(level),
+        "level_numeric": level,
+        "text": warning.get("text"),
+        "html_text": warning.get("htmlText"),
+        "valid_from": valid_from.isoformat() if valid_from else None,
+        "valid_to": valid_to.isoformat() if valid_to else None,
+        "links": warning.get("links") or [],
+        "outlook": bool(warning.get("outlook")),
+        "icon_color": warning_level_color(level),
+    }
 
 
 @dataclass
@@ -638,6 +738,11 @@ class MeteoData:
 
     place: PlaceForecast
     station: StationObservation | None = None
+    # Pollen values for the entry's pollen station (a
+    # pollen.PollenData), or None when pollen could not be fetched.
+    # Typed loosely: pollen.py imports from this module, so a direct
+    # reference would be circular.
+    pollen: object | None = None
     # Set when the station was chosen automatically (no station code
     # configured): the selection distance and whether the chosen
     # station currently reports temperature.

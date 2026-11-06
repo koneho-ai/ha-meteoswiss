@@ -1,0 +1,42 @@
+{
+ "config": {
+  "name": "measurement-messwerte-pollen-graeser-1h-stations",
+  "language": "en",
+  "version": "3.0.0",
+  "timestamp": 1793980627539
+ },
+ "stations": [
+  {
+   "id": "PBE",
+   "station_name": "Bern",
+   "current": {
+    "value": "0",
+    "date": 1793977200000,
+    "label": "Current value",
+    "summary": "Grasses, measured on 6.11.2026, 16:00 at 568 m a. sea level"
+   },
+   "altitude": "568",
+   "canton": "BE",
+   "latlong": [
+    46.950342,
+    7.424661
+   ]
+  },
+  {
+   "id": "PZH",
+   "station_name": "Z\u00fcrich",
+   "current": {
+    "value": "0",
+    "date": 1793977200000,
+    "label": "Current value",
+    "summary": "Grasses, measured on 6.11.2026, 16:00 at 581 m a. sea level"
+   },
+   "altitude": "581",
+   "canton": "ZH",
+   "latlong": [
+    47.378225,
+    8.565644
+   ]
+  }
+ ]
+}

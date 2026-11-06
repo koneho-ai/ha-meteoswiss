@@ -15,7 +15,14 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .client import MeteoSwissApiError, MeteoSwissClient
-from .const import CONF_NAME, CONF_POSTCODE, CONF_STATION, DOMAIN, resolve_update_interval
+from .const import (
+    CONF_NAME,
+    CONF_POLLEN_STATION,
+    CONF_POSTCODE,
+    CONF_STATION,
+    DOMAIN,
+    resolve_update_interval,
+)
 from .coordinator import MeteoSwissCoordinator
 from .repairs import issue_id_for_entry
 
@@ -28,6 +35,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_get_clientsession(hass),
         entry.data[CONF_POSTCODE],
         entry.data.get(CONF_STATION) or None,
+        pollen_station=entry.data.get(CONF_POLLEN_STATION) or None,
+        language=hass.config.language,
     )
     coordinator = MeteoSwissCoordinator(
         hass,

@@ -28,6 +28,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     DEGREE,
+    MATCH_ALL,
     PERCENTAGE,
     UnitOfIrradiance,
     UnitOfLength,
@@ -49,6 +50,8 @@ from .const import (
     CONF_STATION,
     DOMAIN,
     STATION_COLUMNS,
+    WARN_LEVEL_NAMES,
+    warnings_number,
 )
 from .coordinator import MeteoSwissCoordinator
 from .models import (
@@ -57,6 +60,13 @@ from .models import (
     StationObservation,
     present_station_columns,
     stale_station_sensor_unique_ids,
+)
+from .pollen import (
+    POLLEN_LEVELS,
+    POLLEN_PLANT_KEYS,
+    POLLEN_PLANT_NAMES,
+    PollenData,
+    pollen_level_color,
 )
 
 _DEVICE_CLASSES = {
@@ -255,6 +265,25 @@ async def async_setup_entry(
             MeteoSwissStationSensor(coordinator, entry, column, data.station.code)
             for column in station_columns
         )
+    # Per-rank warning sensor pairs (type + level), count from the
+    # entry's warnings_number setting. Created unconditionally like
+    # the other place sensors; they read as unknown while no warning
+    # is active at their rank.
+    for rank in range(warnings_number(entry.data)):
+        entities.append(MeteoSwissWarningTypeSensor(coordinator, entry, rank))
+        entities.append(MeteoSwissWarningLevelSensor(coordinator, entry, rank))
+    # Pollen sensors only exist while pollen data is available for
+    # the entry's pollen station (sparse network; most stations
+    # report all seven plants, but availability is data-driven).
+    if data is not None and data.pollen is not None:
+        entities.append(MeteoSwissPollenSensor(coordinator, entry, "timestamp"))
+        for plant_key in POLLEN_PLANT_KEYS:
+            entities.append(
+                MeteoSwissPollenSensor(coordinator, entry, "value", plant_key)
+            )
+            entities.append(
+                MeteoSwissPollenSensor(coordinator, entry, "level", plant_key)
+            )
     async_add_entities(entities)
 
 
@@ -297,6 +326,10 @@ class MeteoSwissPlaceSensor(_BaseSensor):
         super().__init__(coordinator, entry)
         self.entity_description = description
         self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_{description.key}"
+        if description.key == "warnings_summary":
+            # The summary carries the full warning records as
+            # attributes; keep those out of the recorder.
+            self._entity_component_unrecorded_attributes = MATCH_ALL
 
     @property
     def native_value(self) -> Any:
@@ -392,7 +425,10 @@ class MeteoSwissPlaceSensor(_BaseSensor):
         elif key == "warnings_summary":
             summary = place.warnings_summary()
             attrs["warnings_count"] = summary["count"]
-            attrs["warnings"] = place.warnings
+            # Only warnings still in force (the summary filters
+            # expired records); the raw payload records stay on the
+            # forecast-graph sensor attributes.
+            attrs["warnings"] = summary["warnings"]
             attrs["warnings_text"] = summary["text_joined"]
             attrs["warn_types"] = summary["warn_types"]
             attrs["warn_type_names"] = summary["warn_type_names"]
@@ -443,6 +479,13 @@ class MeteoSwissPlaceSensor(_BaseSensor):
             attrs["station_distance_km"] = data.station_distance_km if data else None
             attrs["station_temperature_available"] = (
                 data.station_has_temperature if data else None
+            )
+            pollen = data.pollen if data else None
+            attrs["pollen_station_code"] = (
+                getattr(pollen, "station_code", None) if pollen else None
+            )
+            attrs["pollen_station_name"] = (
+                getattr(pollen, "station_name", None) if pollen else None
             )
         return attrs
 
@@ -502,4 +545,214 @@ class MeteoSwissStationSensor(_BaseSensor):
         }
         if station is not None and station.measured_at is not None:
             attrs["measured_at"] = station.measured_at.isoformat()
+        return attrs
+
+
+class _WarningRankSensorBase(_BaseSensor):
+    """Base for the per-rank warning sensors.
+
+    Rank 0 is the most severe *active* warning (expired records are
+    filtered by the model). The pair per rank mirrors the classic
+    hass-swissweather warning sensors: a type sensor carrying the
+    full warning detail as attributes and a level sensor carrying a
+    numeric level + icon colour. Both keep their attributes out of
+    the recorder — warning texts and HTML are heavy and change rarely.
+    """
+
+    _entity_component_unrecorded_attributes = MATCH_ALL
+
+    def __init__(
+        self,
+        coordinator: MeteoSwissCoordinator,
+        entry: ConfigEntry,
+        rank: int,
+        description: SensorEntityDescription,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self.entity_description = description
+        self._rank = rank
+        self._attr_unique_id = (
+            f"{entry.unique_id or entry.entry_id}_{description.key}"
+        )
+
+    @property
+    def _details(self) -> dict[str, Any] | None:
+        return self._place.warning_at_rank(self._rank)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"source": ATTRIBUTION}
+
+
+class MeteoSwissWarningTypeSensor(_WarningRankSensorBase):
+    """Type of the warning at one severity rank."""
+
+    def __init__(
+        self,
+        coordinator: MeteoSwissCoordinator,
+        entry: ConfigEntry,
+        rank: int,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            rank,
+            SensorEntityDescription(
+                key=f"warning_{rank + 1}_type",
+                name=f"Warning {rank + 1} type",
+                icon="mdi:alert",
+            ),
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        details = self._details
+        return details["type_name"] if details else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs = super().extra_state_attributes
+        details = self._details
+        if details is None:
+            return attrs
+        attrs.update(
+            {
+                "level": details["level"],
+                "level_numeric": details["level_numeric"],
+                "text": details["text"],
+                "html_text": details["html_text"],
+                "valid_from": details["valid_from"],
+                "valid_to": details["valid_to"],
+                "links": details["links"],
+                "outlook": details["outlook"],
+                "icon_color": details["icon_color"],
+            }
+        )
+        return attrs
+
+
+class MeteoSwissWarningLevelSensor(_WarningRankSensorBase):
+    """Level (hazard name) of the warning at one severity rank."""
+
+    def __init__(
+        self,
+        coordinator: MeteoSwissCoordinator,
+        entry: ConfigEntry,
+        rank: int,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            rank,
+            SensorEntityDescription(
+                key=f"warning_{rank + 1}_level",
+                name=f"Warning {rank + 1} level",
+                icon="mdi:alert",
+                device_class=SensorDeviceClass.ENUM,
+            ),
+        )
+        self._attr_options = list(WARN_LEVEL_NAMES.values())
+
+    @property
+    def native_value(self) -> str | None:
+        details = self._details
+        return details["level"] if details else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs = super().extra_state_attributes
+        details = self._details
+        if details is not None:
+            attrs["numeric"] = details["level_numeric"]
+            attrs["icon_color"] = details["icon_color"]
+        return attrs
+
+
+class MeteoSwissPollenSensor(_BaseSensor):
+    """Pollen concentration / level / measurement-time sensor.
+
+    One instance per plant and mode ("value" concentration in
+    pollen/m³, "level" load class), plus one station-wide
+    "timestamp" instance. Entities are only created while pollen
+    data is available; a later failed pollen fetch makes them
+    unavailable for that cycle instead of failing the update.
+    """
+
+    def __init__(
+        self,
+        coordinator: MeteoSwissCoordinator,
+        entry: ConfigEntry,
+        mode: str,
+        plant_key: str | None = None,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._mode = mode
+        self._plant_key = plant_key
+        if mode == "timestamp":
+            key = "pollen_measured_at"
+            name = "Pollen measurement"
+            description = SensorEntityDescription(
+                key=key,
+                name=name,
+                icon="mdi:clock-outline",
+                device_class=SensorDeviceClass.TIMESTAMP,
+            )
+        elif mode == "value":
+            plant_name = POLLEN_PLANT_NAMES[plant_key]  # type: ignore[index]
+            description = SensorEntityDescription(
+                key=f"pollen_{plant_key}",
+                name=f"Pollen {plant_name}",
+                icon="mdi:flower-pollen",
+                native_unit_of_measurement="p/m³",
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=0,
+            )
+        else:
+            plant_name = POLLEN_PLANT_NAMES[plant_key]  # type: ignore[index]
+            description = SensorEntityDescription(
+                key=f"pollen_{plant_key}_level",
+                name=f"Pollen {plant_name} level",
+                icon="mdi:flower-pollen-outline",
+                device_class=SensorDeviceClass.ENUM,
+            )
+            self._attr_options = list(POLLEN_LEVELS)
+            # The level sensor carries the raw concentration as an
+            # attribute; keep it out of the recorder.
+            self._entity_component_unrecorded_attributes = MATCH_ALL
+        self.entity_description = description
+        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_{description.key}"
+
+    @property
+    def _pollen(self) -> PollenData | None:
+        data = self.coordinator.data
+        pollen = data.pollen if data else None
+        return pollen if isinstance(pollen, PollenData) else None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._pollen is not None
+
+    @property
+    def native_value(self) -> Any:
+        pollen = self._pollen
+        if pollen is None:
+            return None
+        if self._mode == "timestamp":
+            return pollen.measured_at
+        if self._mode == "value":
+            return pollen.value(self._plant_key)  # type: ignore[arg-type]
+        return pollen.level(self._plant_key)  # type: ignore[arg-type]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        pollen = self._pollen
+        attrs: dict[str, Any] = {
+            "source": ATTRIBUTION,
+            "pollen_station_code": pollen.station_code if pollen else None,
+            "pollen_station_name": pollen.station_name if pollen else None,
+        }
+        if self._mode == "level" and pollen is not None:
+            level = pollen.level(self._plant_key)  # type: ignore[arg-type]
+            attrs["icon_color"] = pollen_level_color(level)
+            attrs["concentration"] = pollen.value(self._plant_key)  # type: ignore[arg-type]
         return attrs

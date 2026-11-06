@@ -104,19 +104,31 @@ def parse_station_directory(text: str) -> dict[str, str]:
 AUTOMATIC_STATION_LABEL = "Automatic (nearest station)"
 
 
-def build_station_options(directory: dict[str, str]) -> list[tuple[str, str]]:
+def build_station_options(
+    directory: dict[str, str],
+    coordinates: dict[str, LatLon] | None = None,
+    home: LatLon | None = None,
+) -> list[tuple[str, str]]:
     """(value, label) options for the config-flow station picker.
 
     The first option is the automatic choice (empty value); the rest
     are every station as ``"Name (CODE)"``, sorted by station name
     (case-insensitive, code as tie-breaker). Values are the plain
     station codes, exactly as stored in the entry data.
+
+    When both the station ``coordinates`` and the HA ``home``
+    location are known, each label gains a ``" – N km away"`` suffix
+    with the distance from home (rounded to whole kilometres), which
+    makes the list scannable without changing the sort order.
     """
     options: list[tuple[str, str]] = [("", AUTOMATIC_STATION_LABEL)]
     for code, name in sorted(
         directory.items(), key=lambda item: (item[1].lower(), item[0])
     ):
-        options.append((code, f"{name} ({code})"))
+        label = f"{name} ({code})"
+        if home is not None and coordinates is not None and code in coordinates:
+            label += f" – {haversine_km(home, coordinates[code]):.0f} km away"
+        options.append((code, label))
     return options
 
 

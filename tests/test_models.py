@@ -111,3 +111,52 @@ def test_daily_aggregates(fixture_bytes):
 
     sunshine = place.sunshine_hours_for_day(today)
     assert sunshine is not None and 0 <= sunshine <= 24
+
+
+# --- v0.3.0: sentinel values, icon preference, hourly sunshine/filter ------
+
+from koneho_meteoswiss.models import CurrentWeather  # noqa: E402
+
+
+def test_current_weather_sentinel_is_missing():
+    current = CurrentWeather.from_dict(
+        {"icon": 32767, "iconV2": 32767, "temperature": 32767, "time": None}
+    )
+    assert current.icon is None
+    assert current.icon_v2 is None
+    assert current.temperature is None
+    assert current.condition_icon is None
+
+
+def test_current_weather_prefers_icon_v2():
+    current = CurrentWeather.from_dict(
+        {"icon": 1, "iconV2": 101, "temperature": 5.0}
+    )
+    assert current.condition_icon == 101
+    # V2 missing -> legacy icon.
+    current = CurrentWeather.from_dict({"icon": 2, "iconV2": 32767})
+    assert current.condition_icon == 2
+    # V2 present alone.
+    current = CurrentWeather.from_dict({"iconV2": 5})
+    assert current.condition_icon == 5
+
+
+def test_hourly_forecast_carries_sunshine_and_filters(fixture_bytes):
+    from datetime import datetime, timezone
+
+    place = _place(fixture_bytes)
+    full = place.hourly_forecast()
+    assert len(full) == 192
+    assert "sunshine" in full[0]
+    # sunshine1h is in the fixture graph; values are minutes or None.
+    assert full[0]["sunshine"] is None or isinstance(full[0]["sunshine"], (int, float))
+
+    now = datetime(2026, 11, 6, 10, 30, tzinfo=timezone.utc)
+    filtered = place.hourly_forecast(now=now)
+    assert filtered[0]["datetime"] == "2026-11-06T10:00:00+00:00"
+    assert len(filtered) == 192 - 11
+    # Sunshine stays index-aligned after filtering.
+    assert filtered[0]["sunshine"] == full[11]["sunshine"]
+    # A now before the window changes nothing; after it, empty.
+    assert len(place.hourly_forecast(now=datetime(2026, 1, 1, tzinfo=timezone.utc))) == 192
+    assert place.hourly_forecast(now=datetime(2027, 1, 1, tzinfo=timezone.utc)) == []

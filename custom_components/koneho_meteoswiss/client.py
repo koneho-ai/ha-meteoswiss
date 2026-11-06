@@ -20,6 +20,7 @@ Key behaviours, all observed live against the production endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -35,12 +36,24 @@ from .const import (
     FORECAST_URL,
     META_POINTS_URL,
     PLZ_DETAIL_URL,
+    POLLEN_DATA_URL,
+    POLLEN_META_URL,
     STATION_CSV_VQHA80_URL,
     STATION_CSV_VQHA98_URL,
     STATION_LIST_URL,
     USER_AGENT,
+    normalize_language,
 )
 from .models import MeteoData, PlaceForecast, StationObservation
+from .pollen import (
+    POLLEN_PLANT_KEYS,
+    POLLEN_PLANT_PRODUCTS,
+    PollenData,
+    PollenStation,
+    parse_pollen_product,
+    parse_pollen_stations,
+    select_nearest_pollen_station,
+)
 from .stations import (
     LatLon,
     parse_meta_points,
@@ -71,6 +84,30 @@ def _metadata_cache_get(key: str) -> Any | None:
 
 def _metadata_cache_set(key: str, value: Any) -> None:
     _metadata_cache[key] = (time.monotonic(), value)
+
+
+# Pollen values change slowly (hourly products, and outside the
+# season they sit at 0 for weeks), so the seven per-plant product
+# files and the station metadata are cached for an hour; the main
+# coordinator can ask for pollen on every refresh and only pays the
+# network cost when the TTL expires.
+_POLLEN_TTL_SECONDS = 3600
+_pollen_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _pollen_cache_get(key: str) -> Any | None:
+    entry = _pollen_cache.get(key)
+    if entry is None:
+        return None
+    stored_at, value = entry
+    if time.monotonic() - stored_at > _POLLEN_TTL_SECONDS:
+        _pollen_cache.pop(key, None)
+        return None
+    return value
+
+
+def _pollen_cache_set(key: str, value: Any) -> None:
+    _pollen_cache[key] = (time.monotonic(), value)
 
 
 class MeteoSwissApiError(Exception):
@@ -220,13 +257,25 @@ class MeteoSwissClient:
         session: aiohttp.ClientSession,
         postcode: str,
         station: str | None = None,
+        pollen_station: str | None = None,
+        language: str | None = None,
     ) -> None:
         self._session = session
         self.postcode = str(postcode).strip()
         self.station = station.strip().upper() if station else None
+        self.pollen_station = (
+            pollen_station.strip().upper() if pollen_station else None
+        )
+        # Normalised MeteoSwiss language ("de"/"fr"/"it"/"en"): sent
+        # as Accept-Language so the app API localises its texts, and
+        # used as the pollen product file suffix.
+        self.language = normalize_language(language)
 
     def _headers(self) -> dict[str, str]:
-        return {"User-Agent": USER_AGENT}
+        return {
+            "User-Agent": USER_AGENT,
+            "Accept-Language": self.language,
+        }
 
     async def _get_bytes(self, url: str) -> bytes:
         try:
@@ -263,14 +312,24 @@ class MeteoSwissClient:
         return place
 
     async def async_fetch_stations(self) -> dict[str, StationObservation]:
-        """Fetch and merge both SwissMetNet actual-values CSV files."""
-        text80 = await self._get_text(STATION_CSV_VQHA80_URL)
-        stations = parse_station_csv(text80, "VQHA80")
+        """Fetch and merge both SwissMetNet actual-values CSV files.
+
+        A failed fetch of either file degrades to whatever data is
+        available (possibly none) instead of failing the whole update:
+        the forecast payload is the primary product and must not be
+        held hostage by the station CSVs.
+        """
+        stations: dict[str, StationObservation] = {}
+        try:
+            text80 = await self._get_text(STATION_CSV_VQHA80_URL)
+            stations = parse_station_csv(text80, "VQHA80")
+        except MeteoSwissApiError as err:
+            _LOGGER.warning("VQHA80 fetch failed (%s); no station data", err)
         try:
             text98 = await self._get_text(STATION_CSV_VQHA98_URL)
             stations = merge_station_data(stations, parse_station_csv(text98, "VQHA98"))
         except MeteoSwissApiError as err:
-            _LOGGER.debug("VQHA98 fetch failed (%s); continuing with VQHA80 only", err)
+            _LOGGER.debug("VQHA98 fetch failed (%s); continuing without it", err)
         return stations
 
     async def async_fetch_point_coordinates(self) -> LatLon | None:
@@ -309,16 +368,123 @@ class MeteoSwissClient:
             _metadata_cache_set("station_directory", directory)
         return directory
 
+    # -- Pollen ---------------------------------------------------------------
+
+    async def async_fetch_pollen_stations(self) -> dict[str, PollenStation]:
+        """All pollen stations from the metadata CSV (cached, 1 h)."""
+        cached = _pollen_cache_get("meta")
+        if cached is not None:
+            return cached
+        body = await self._get_bytes(POLLEN_META_URL)
+        stations = parse_pollen_stations(body.decode("latin-1"), self.language)
+        _pollen_cache_set("meta", stations)
+        return stations
+
+    async def async_fetch_pollen_directory(self) -> dict[str, PollenStation]:
+        """Pollen stations for the config-flow picker (same fetch)."""
+        return await self.async_fetch_pollen_stations()
+
+    async def _async_fetch_pollen_product(
+        self, plant_key: str
+    ) -> dict[str, tuple[float | None, datetime | None]]:
+        """One plant's stations-table product (cached per URL, 1 h).
+
+        A failed product degrades to an empty mapping: one plant
+        being unavailable must not take the other six down with it.
+        """
+        url = POLLEN_DATA_URL.format(
+            plant=POLLEN_PLANT_PRODUCTS[plant_key], lang=self.language
+        )
+        cached = _pollen_cache_get(url)
+        if cached is not None:
+            return cached
+        try:
+            body = await self._get_bytes(url)
+            values = parse_pollen_product(json.loads(body.decode("utf-8")))
+        except (MeteoSwissApiError, ValueError) as err:
+            _LOGGER.warning("Pollen product for %s failed: %s", plant_key, err)
+            values = {}
+        _pollen_cache_set(url, values)
+        return values
+
+    async def async_fetch_pollen(self) -> PollenData | None:
+        """Current pollen values for this entry's pollen station.
+
+        The station is the manually configured one, or the nearest
+        pollen station to the postcode point. Returns None when no
+        station can be determined or the station appears in none of
+        the plant products (no data available for it).
+        """
+        stations_meta = await self.async_fetch_pollen_stations()
+        code = self.pollen_station
+        if code is None:
+            point = await self.async_fetch_point_coordinates()
+            if point is None:
+                return None
+            nearest = select_nearest_pollen_station(point, stations_meta)
+            if nearest is None:
+                return None
+            code = nearest[0]
+        products = await asyncio.gather(
+            *(
+                self._async_fetch_pollen_product(plant_key)
+                for plant_key in POLLEN_PLANT_KEYS
+            )
+        )
+        values: dict[str, float | None] = {}
+        timestamps: list[datetime] = []
+        found = False
+        for plant_key, product in zip(POLLEN_PLANT_KEYS, products):
+            entry = product.get(code)
+            if entry is None:
+                values[plant_key] = None
+                continue
+            found = True
+            value, measured_at = entry
+            values[plant_key] = value
+            if measured_at is not None:
+                timestamps.append(measured_at)
+        if not found:
+            _LOGGER.warning(
+                "Pollen station %s not present in any pollen product", code
+            )
+            return None
+        station = stations_meta.get(code)
+        return PollenData(
+            station_code=code,
+            station_name=station.name if station else None,
+            measured_at=max(timestamps) if timestamps else None,
+            values=values,
+        )
+
+    async def _async_fetch_pollen_safely(self) -> PollenData | None:
+        """Pollen fetch that never fails the coordinator update."""
+        try:
+            return await self.async_fetch_pollen()
+        except MeteoSwissApiError as err:
+            _LOGGER.warning(
+                "Pollen fetch failed for %s: %s", self.postcode, err
+            )
+            return None
+
     async def async_get_data(self) -> MeteoData:
-        """Fetch place payload plus station data.
+        """Fetch place payload plus station and pollen data.
 
         A manually configured station always wins. Without one, the
         nearest SwissMetNet station is selected automatically (see
         :func:`stations.select_nearest_station`); if the metadata
         needed for selection cannot be fetched, the update still
-        succeeds with forecast data only.
+        succeeds with forecast data only. Station CSV and pollen
+        failures likewise degrade to "no data this cycle" — only the
+        place payload itself is allowed to fail the update.
         """
         place = await self.async_fetch_place()
+        data = await self._async_get_station_data(place)
+        data.pollen = await self._async_fetch_pollen_safely()
+        return data
+
+    async def _async_get_station_data(self, place: PlaceForecast) -> MeteoData:
+        """Resolve the station observation for one place payload."""
         if self.station:
             stations = await self.async_fetch_stations()
             station_obs = stations.get(self.station)

@@ -170,7 +170,27 @@ def test_async_forecast_daily(fixture_bytes):
     assert first["native_templow"] == 6
 
 
-def test_async_forecast_hourly(fixture_bytes):
+def _pin_weather_now(monkeypatch, iso: str) -> None:
+    """Pin the entity module's datetime so forecast filtering is stable."""
+    from datetime import datetime as real_datetime, timezone
+
+    import koneho_meteoswiss.weather as weather_module
+
+    fixed = real_datetime.fromisoformat(iso)
+
+    class _FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed if tz is None else fixed.astimezone(tz)
+
+    monkeypatch.setattr(weather_module, "datetime", _FixedDatetime)
+    assert timezone is not None  # keep linters quiet about the import
+
+
+def test_async_forecast_hourly(fixture_bytes, monkeypatch):
+    # v0.3.0: hourly entries before the current hour are filtered out.
+    # Pin "now" at the graph start so the full window is returned.
+    _pin_weather_now(monkeypatch, "2026-11-05T23:00:00+00:00")
     hourly = asyncio.run(_entity(fixture_bytes).async_forecast_hourly())
     assert len(hourly) == 192  # one entry per temperatureMean1h point
 
@@ -178,3 +198,13 @@ def test_async_forecast_hourly(fixture_bytes):
     assert first["datetime"] == "2026-11-05T23:00:00+00:00"
     assert first["condition"] == "partlycloudy"  # weatherIcon3h 103
     assert first["native_temperature"] == 6.3
+
+
+def test_async_forecast_hourly_drops_past_hours(fixture_bytes, monkeypatch):
+    # Graph starts 2026-11-05T23:00Z; at 2026-11-06T10:30Z the first
+    # 11 hours are past and only 181 entries remain, starting at the
+    # current hour.
+    _pin_weather_now(monkeypatch, "2026-11-06T10:30:00+00:00")
+    hourly = asyncio.run(_entity(fixture_bytes).async_forecast_hourly())
+    assert len(hourly) == 192 - 11
+    assert hourly[0]["datetime"] == "2026-11-06T10:00:00+00:00"

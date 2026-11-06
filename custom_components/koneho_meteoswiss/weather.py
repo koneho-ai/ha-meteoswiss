@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.components.weather import (
@@ -78,7 +78,8 @@ class MeteoSwissWeather(CoordinatorEntity[MeteoSwissCoordinator], WeatherEntity)
 
     @property
     def condition(self) -> str | None:
-        return icon_to_condition(self._place.current.icon)
+        # Prefer the V2 icon set (night-aware) over the legacy icon.
+        return icon_to_condition(self._place.current.condition_icon)
 
     # Current conditions the place payload does not carry (it has only
     # icon + temperature) are taken from the station observation —
@@ -133,7 +134,7 @@ class MeteoSwissWeather(CoordinatorEntity[MeteoSwissCoordinator], WeatherEntity)
         """Build daily or hourly forecasts in HA Forecast shape."""
         place = self._place
         if forecast_type == "hourly":
-            raw = place.hourly_forecast()
+            raw = place.hourly_forecast(now=datetime.now(timezone.utc))
             return [
                 Forecast(
                     datetime=entry["datetime"],

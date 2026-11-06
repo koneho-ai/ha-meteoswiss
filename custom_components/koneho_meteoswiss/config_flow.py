@@ -23,16 +23,22 @@ from homeassistant.helpers.selector import (
 from .client import MeteoSwissApiError, MeteoSwissClient
 from .const import (
     CONF_NAME,
+    CONF_POLLEN_STATION,
     CONF_POSTCODE,
     CONF_STATION,
     CONF_UPDATE_INTERVAL,
+    CONF_WARNINGS_NUMBER,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     MAX_UPDATE_INTERVAL_MINUTES,
+    MAX_WARNINGS_NUMBER,
     MIN_UPDATE_INTERVAL_MINUTES,
+    MIN_WARNINGS_NUMBER,
     DOMAIN,
     update_interval_minutes,
+    warnings_number,
 )
-from .stations import build_station_options
+from .pollen import build_pollen_station_options
+from .stations import LatLon, build_station_options
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,43 +46,67 @@ _POSTCODE_RE = re.compile(r"^\d{4}$")
 _STATION_RE = re.compile(r"^[A-Z]{3}$")
 
 
+def _station_selector_field(
+    options: list[tuple[str, str]] | None, current: str
+) -> Any:
+    """Dropdown selector for a station picker, text fallback on None.
+
+    A currently configured value missing from the fetched list stays
+    selectable so reconfiguring does not silently drop it.
+    """
+    if options is None:
+        return str
+    values = [value for value, _ in options]
+    merged = list(options)
+    if current and current not in values:
+        merged.append((current, current))
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(value=value, label=label)
+                for value, label in merged
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
 def _form_schema(
     defaults: dict[str, Any],
     station_options: list[tuple[str, str]] | None = None,
+    pollen_options: list[tuple[str, str]] | None = None,
 ) -> vol.Schema:
     """Build the user/reconfigure form schema.
 
-    When ``station_options`` is available (station metadata fetched),
-    the station field is a dropdown of "Name (CODE)" entries headed by
-    the automatic choice. When it is None (metadata fetch failed), the
-    field falls back to the free-text code field so setup never
-    hard-blocks on the metadata endpoint.
+    When ``station_options`` / ``pollen_options`` are available
+    (metadata fetched), the station fields are dropdowns of
+    "Name (CODE)" entries headed by the automatic choice. When one
+    is None (metadata fetch failed), that field falls back to the
+    free-text code field so setup never hard-blocks on the metadata
+    endpoints.
     """
     station_default = defaults.get(CONF_STATION) or ""
-    if station_options is not None:
-        values = [value for value, _ in station_options]
-        options = list(station_options)
-        if station_default and station_default not in values:
-            # A configured station that vanished from the current list
-            # stays selectable so reconfiguring does not silently
-            # drop it.
-            options.append((station_default, station_default))
-        station_field: Any = SelectSelector(
-            SelectSelectorConfig(
-                options=[
-                    SelectOptionDict(value=value, label=label)
-                    for value, label in options
-                ],
-                mode=SelectSelectorMode.DROPDOWN,
-            )
-        )
-    else:
-        station_field = str
+    pollen_default = defaults.get(CONF_POLLEN_STATION) or ""
     return vol.Schema(
         {
             vol.Optional(CONF_NAME, default=defaults.get(CONF_NAME) or ""): str,
             vol.Required(CONF_POSTCODE, default=defaults.get(CONF_POSTCODE) or ""): str,
-            vol.Optional(CONF_STATION, default=station_default): station_field,
+            vol.Optional(CONF_STATION, default=station_default): (
+                _station_selector_field(station_options, station_default)
+            ),
+            vol.Optional(CONF_POLLEN_STATION, default=pollen_default): (
+                _station_selector_field(pollen_options, pollen_default)
+            ),
+            vol.Optional(
+                CONF_WARNINGS_NUMBER, default=warnings_number(defaults)
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_WARNINGS_NUMBER,
+                    max=MAX_WARNINGS_NUMBER,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
             vol.Optional(
                 CONF_UPDATE_INTERVAL, default=update_interval_minutes(defaults)
             ): NumberSelector(
@@ -96,17 +126,43 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def _home_coordinates(self) -> LatLon | None:
+        """HA home location for distance labels, when configured."""
+        latitude = getattr(self.hass.config, "latitude", None)
+        longitude = getattr(self.hass.config, "longitude", None)
+        if isinstance(latitude, (int, float)) and isinstance(
+            longitude, (int, float)
+        ):
+            return (float(latitude), float(longitude))
+        return None
+
     async def _async_station_options(self) -> list[tuple[str, str]] | None:
         """Station picker options, or None when metadata is unreachable."""
         client = MeteoSwissClient(async_get_clientsession(self.hass), "1000")
         try:
             directory = await client.async_fetch_station_directory()
+            coordinates: dict[str, LatLon] = {}
+            home = self._home_coordinates()
+            if home is not None:
+                coordinates = await client.async_fetch_station_coordinates()
         except MeteoSwissApiError as err:
             _LOGGER.debug("Station list unavailable for config flow: %s", err)
             return None
         if not directory:
             return None
-        return build_station_options(directory)
+        return build_station_options(directory, coordinates, home)
+
+    async def _async_pollen_options(self) -> list[tuple[str, str]] | None:
+        """Pollen picker options, or None when metadata is unreachable."""
+        client = MeteoSwissClient(async_get_clientsession(self.hass), "1000")
+        try:
+            stations = await client.async_fetch_pollen_directory()
+        except MeteoSwissApiError as err:
+            _LOGGER.debug("Pollen station list unavailable for config flow: %s", err)
+            return None
+        if not stations:
+            return None
+        return build_pollen_station_options(stations, self._home_coordinates())
 
     async def _async_validate(
         self, user_input: dict[str, Any]
@@ -116,11 +172,16 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
         name = (user_input.get(CONF_NAME) or "").strip()
         postcode = str(user_input.get(CONF_POSTCODE) or "").strip()
         station = (user_input.get(CONF_STATION) or "").strip().upper()
+        pollen_station = (
+            user_input.get(CONF_POLLEN_STATION) or ""
+        ).strip().upper()
 
         if not _POSTCODE_RE.match(postcode) or not (1000 <= int(postcode) <= 9999):
             errors[CONF_POSTCODE] = "invalid_postcode"
         if station and not _STATION_RE.match(station):
             errors[CONF_STATION] = "invalid_station"
+        if pollen_station and not _STATION_RE.match(pollen_station):
+            errors[CONF_POLLEN_STATION] = "invalid_pollen_station"
 
         raw_interval = user_input.get(CONF_UPDATE_INTERVAL)
         if raw_interval is None:
@@ -132,6 +193,8 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
                 interval = -1
             if not (MIN_UPDATE_INTERVAL_MINUTES <= interval <= MAX_UPDATE_INTERVAL_MINUTES):
                 errors[CONF_UPDATE_INTERVAL] = "invalid_update_interval"
+
+        number_warnings = warnings_number(user_input)
         if errors:
             return errors, None
 
@@ -149,6 +212,8 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_NAME: name,
             CONF_POSTCODE: postcode,
             CONF_STATION: station,
+            CONF_POLLEN_STATION: pollen_station,
+            CONF_WARNINGS_NUMBER: number_warnings,
             CONF_UPDATE_INTERVAL: interval,
         }
 
@@ -157,6 +222,7 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         station_options: list[tuple[str, str]] | None = None
+        pollen_options: list[tuple[str, str]] | None = None
         if user_input is not None:
             postcode = str(user_input.get(CONF_POSTCODE) or "").strip()
             station = (user_input.get(CONF_STATION) or "").strip().upper()
@@ -167,10 +233,11 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(title=data[CONF_NAME], data=data)
         else:
             station_options = await self._async_station_options()
+            pollen_options = await self._async_pollen_options()
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_form_schema(user_input or {}, station_options),
+            data_schema=_form_schema(user_input or {}, station_options, pollen_options),
             errors=errors,
         )
 
@@ -185,15 +252,17 @@ class MeteoSwissConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         station_options: list[tuple[str, str]] | None = None
+        pollen_options: list[tuple[str, str]] | None = None
         if user_input is not None:
             errors, data = await self._async_validate(user_input)
             if data is not None:
                 return self.async_update_reload_and_abort(entry, data_updates=data)
         else:
             station_options = await self._async_station_options()
+            pollen_options = await self._async_pollen_options()
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_form_schema(dict(entry.data), station_options),
+            data_schema=_form_schema(dict(entry.data), station_options, pollen_options),
             errors=errors,
         )

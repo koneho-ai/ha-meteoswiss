@@ -88,3 +88,29 @@ def test_client_fetch_station_directory(fixture_bytes):
     assert directory["SMA"] == "Zürich / Fluntern"
     assert directory["WAE"] == "Wädenswil"
     assert len(directory) == 5
+
+
+def test_build_station_options_distance_labels(fixture_bytes):
+    directory = parse_station_directory(_directory_text(fixture_bytes))
+    # Coordinates for a subset; home at Zürich HB (near SMA/KLO).
+    coords = {
+        "SMA": (47.3779, 8.5658),
+        "KLO": (47.4647, 8.5492),
+        "WAE": (47.2214, 8.6766),
+    }
+    options = build_station_options(directory, coords, home=(47.378, 8.54))
+    by_code = dict(options)
+    assert by_code["SMA"].startswith("Zürich / Fluntern (SMA) – ")
+    assert by_code["SMA"].endswith(" km away")
+    assert by_code["WAE"].endswith(" km away")
+    # EIN has no coordinates in the map: no suffix, plain label.
+    assert by_code["EIN"] == "Einsiedeln (EIN)"
+    # Sort order stays by name even with suffixes.
+    assert [code for code, _ in options][1:] == ["EIN", "UEB", "WAE", "SMA", "KLO"]
+
+
+def test_build_station_options_no_home_no_suffix(fixture_bytes):
+    directory = parse_station_directory(_directory_text(fixture_bytes))
+    coords = {"SMA": (47.3779, 8.5658)}
+    options = build_station_options(directory, coords, home=None)
+    assert dict(options)["SMA"] == "Zürich / Fluntern (SMA)"

@@ -29,8 +29,15 @@ so a format flip upstream is a non-event.
 | `v2/forecast?plz={PLZ}00&graph_startLowResolution=true&warning=true` (app API) | Fallback place payload if plzDetail fails |
 | `data.geo.admin.ch/.../VQHA80.csv` + `VQHA98.csv` | Official SwissMetNet actual values (10-minute station observations, `-` = missing) |
 | `ogd-local-forecasting_meta_point.csv` + `ch.meteoschweiz.messnetz-automatisch_fr.csv` | Point and station coordinates for automatic nearest-station selection (cached 24 h) |
+| `ch.meteoschweiz.ogd-pollen` station metadata CSV (data.geo.admin.ch) + per-plant `messwerte-pollen-{plant}-1h` stations-table products | Pollen stations (15, incl. coordinates) and current per-plant concentrations (cached 1 h) |
 
-No API key. Polling interval: 15 minutes.
+No API key. Polling interval: 15 minutes (pollen is fetched at most
+hourly via the client-side cache).
+
+The client sends an `Accept-Language` header derived from the Home
+Assistant language (normalised to de/fr/it/en, `de-CH` → `de`,
+fallback English), so warning and forecast texts come back localised;
+the same language selects the pollen product files.
 
 ## Installation
 
@@ -62,6 +69,13 @@ Settings → Devices & Services → Add Integration → **MeteoSwiss (Koneho)**:
   temperature-reporting station is preferred). A manually picked
   station always wins. If the station list cannot be fetched during
   setup, the field falls back to a free-text 3-letter code.
+- **Pollen station** — same dropdown pattern as the weather station,
+  over the ~15 pollen stations; **Automatic** (default) picks the
+  nearest pollen station to the postcode point. The network is sparse
+  by design, so "nearest" can be tens of kilometres away.
+- **Warning sensor pairs** — 0–5 (default 1). For each rank up to N, a
+  pair of sensors exposes the Nth most severe *active* warning (see
+  Entities). 0 disables the rank sensors.
 - **Update interval** — minutes between data updates (1–180,
   default 15).
 
@@ -85,7 +99,8 @@ Per place:
   since the place payload only carries icon + temperature.
   `async_get_forecasts` daily (8 days: high/low,
   precipitation, max precipitation probability, max wind/gust,
-  sunrise/sunset) and hourly (192 h: temperature mean/min/max,
+  sunrise/sunset) and hourly (from the current hour to the end of the
+  192 h window: temperature mean/min/max,
   precipitation, precipitation probability, wind, gusts, direction,
   3-hourly condition). Extra attributes carry the *complete* payload:
   every graph series, all forecast-day fields, warnings overview and
@@ -114,9 +129,22 @@ Per place:
   `Level 2: Forest fire`). Attributes carry the warning count, the
   full records, all warning texts joined (`warnings_text`), the type
   codes and names, the max level and the validity start — this is
-  where the warning *text* lives.
-- **Warnings active** binary sensor (on = a warning is active;
-  attributes = full warning records incl. text, level, type,
+  where the warning *text* lives. Only warnings still in force count:
+  the API keeps recently ended warnings in the payload, and records
+  whose `validTo` has passed are filtered out of the summary, the
+  rank sensors and the binary sensor (the raw payload records remain
+  on the forecast-graph sensor).
+- **Warning <n> type** / **Warning <n> level** sensors — per-rank
+  pairs (count configurable, default 1 pair). Rank 1 is the most
+  severe active warning. The type sensor's state is the warning type
+  name, with attributes `level` (hazard name), `level_numeric`,
+  `text`, `html_text`, `valid_from`, `valid_to`, `links`, `outlook`
+  and `icon_color` (gray ≤ level 1, amber at 2, red above). The level
+  sensor's state is the hazard name (`No danger`, `No or minimal
+  hazard`, `Moderate hazard`, `Significant hazard`, `Severe hazard`,
+  `Very severe hazard`) with `numeric` and `icon_color` attributes.
+- **Warnings active** binary sensor (on = an unexpired warning is
+  active; attributes = full warning records incl. text, level, type,
   validity, links, and the warnings overview)
 
 Per station (configured manually, or the auto-selected nearest
@@ -130,6 +158,56 @@ current value is `-` do not create sensors; on upgrade, stale station
 sensor registry entries for columns without current data are removed
 automatically.
 
+## Pollen
+
+When pollen data is available for the entry's pollen station (see
+Configuration), each place also gets:
+
+- **Pollen <plant>** — current concentration in pollen/m³ for each of
+  the seven allergenic plants: birch, grasses, alder, hazel, beech,
+  ash and oak (measurement, no device class — HA has no pollen device
+  class).
+- **Pollen <plant> level** — the official MeteoSwiss load class for
+  that plant: `None` (0 pollen/m³), `Low`, `Medium`, `Strong` or
+  `Very Strong`, from the per-plant thresholds (low/medium/strong in
+  pollen/m³: birch 10/70/300, grasses 20/50/150, alder 10/70/250,
+  hazel 10/70/250, beech 50/130/400, ash 10/100/350, oak 50/130/400).
+  Attributes carry the raw concentration and an `icon_color`
+  (gray / amber for Medium / red for Strong and above).
+- **Pollen measurement** — timestamp of the station's latest pollen
+  measurement.
+
+Pollen is fetched from the public OGD metadata CSV and the per-plant
+stations-table products on the MeteoSwiss website, cached for one
+hour inside the client. A failed pollen fetch never fails the weather
+update — the pollen sensors simply go unavailable for that cycle.
+
+## Precipitation alignment note
+
+The hourly graph carries three precipitation series whose relationship
+was investigated against live payloads on 2026-11-06 (postcodes 8808
+and 8048, plus the captured fixture):
+
+- `precipitation1h` starts exactly at the graph's
+  `startLowResolution` timestamp (its offset from the window start
+  equals `startLowResolution − start` in hours: 20 h and 22 h in the
+  samples, with 172/170 values against 192 temperature hours). In
+  every observed payload that anchor coincides with aligning the
+  series to the **end** of the window, which is what the integration
+  does.
+- `precipitation10m` values behave as an hourly mean/rate, not as
+  10-minute depths: chunk *sums* overshoot the day's precipitation by
+  ~6×, while chunk *means* land close to `precipitation1h` (the
+  leftover partial chunk past `startLowResolution` matched
+  `precipitation1h[0]` exactly in the live sample). However, the
+  totals do not reconcile exactly with either `precipitation1h` or
+  the daily `precipitation` sums across the whole window (the daily
+  list appears to come from a different model run), so no 10-minute
+  reconstruction is shipped: the hourly forecast keeps using the
+  end-aligned `precipitation1h`, whose anchoring is validated, and
+  the raw 10-minute series remains available verbatim in the
+  precipitation sensor attributes.
+
 ## Icon → condition mapping
 
 Based on MeteoSwiss's published weather-symbol table: day symbols
@@ -141,6 +219,28 @@ pouring). Night symbols mirror the day symbols except 101
 yield no condition but remain visible on the icon-code sensor.
 
 ## Changelog
+
+- **0.3.0** — Pollen: per-plant concentration + load-level sensors
+  and a measurement timestamp for the nearest (or a configured)
+  pollen station, from the public OGD/stations-table products,
+  cached hourly. Warnings: expired warnings (`validTo` passed) are
+  filtered out of the summary/rank/binary sensors, active warnings
+  are sorted by level, and configurable per-rank type+level sensor
+  pairs were added (default 1 pair). Localisation: the client sends
+  `Accept-Language` from the HA language (de/fr/it/en), which also
+  selects the pollen product language. Hourly forecast now starts at
+  the current hour (past hours dropped) and the model carries
+  per-hour sunshine minutes (not forwarded to HA — the Forecast
+  dictionary has no sunshine key in HA 2026.11; sunshine stays on the
+  Sunshine today sensor and the model data). Current condition
+  prefers the V2 icon; the API's 32767 "no data" sentinel is treated
+  as missing for current temperature/icons. A failed station-CSV
+  fetch no longer fails the whole update (forecast still updates,
+  station is empty for that cycle). Station pickers show
+  "– N km away" distance labels when the HA home location is known.
+  CI: hassfest, HACS and pytest workflows added. See the
+  precipitation alignment note above for the (unchanged, validated)
+  hourly precipitation anchoring.
 
 - **0.2.2** — Condition mapping replaced with MeteoSwiss's published
   symbol table (day codes 1–42, night codes 101–142; previously only
@@ -168,9 +268,9 @@ yield no condition but remain visible on the icon-code sensor.
 
 ## Development
 
-The parsing core (`client.py`, `models.py`, `icons.py`) has no Home
-Assistant dependency and is covered by offline pytest tests using live
-fixtures captured on 2026-11-06:
+The parsing core (`client.py`, `models.py`, `icons.py`, `pollen.py`,
+`stations.py`) has no Home Assistant dependency and is covered by
+offline pytest tests using live fixtures captured on 2026-11-06:
 
 ```bash
 python -m pytest tests/
